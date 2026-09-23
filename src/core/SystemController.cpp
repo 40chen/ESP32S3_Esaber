@@ -1,54 +1,135 @@
 #include "SystemController.h"
-#include "../../include/config.h"
-#include <Arduino.h>
-#include <Wire.h>
 
-namespace Core {
+#include <Wire.h>
+#include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+#include "../../include/HardwareConfig.h"
+
+namespace {
+
+constexpr unsigned long kSerialSettleMs = 1000;
+constexpr uint16_t kQrRefreshMs = 1000;
+// One-shot resource report, late enough that the web server and the audio
+// decoder have both run at least once.
+constexpr unsigned long kDiagnosticsDelayMs = 5000;
+
+// A reset reason is the only way to tell a brown-out from a crash from a
+// watchdog reset after the fact, so name it explicitly on every boot.
+const char* resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external pin";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic (exception / stack overflow)";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    case ESP_RST_BROWNOUT: return "BROWNOUT - supply sagged";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "unknown";
+  }
+}
+
+}  // namespace
 
 void SystemController::begin() {
-  // Initialize serial for debugging
   Serial.begin(115200);
-  delay(1000);
-  
-  Serial.println("\n===== LOL Infinity Edge System Starting =====");
-  Serial.println("Initializing hardware drivers...");
+  delay(kSerialSettleMs);
+  Serial.println("\n[ESABER] starting");
+  logResetReason();
 
-  // Initialize I2C bus
-  Wire.begin(Config::I2C_SDA, Config::I2C_SCL);
+  Wire.begin(HardwareConfig::I2cSda, HardwareConfig::I2cScl);
+  settings_.begin();
+  display_.begin();
+  pinMode(HardwareConfig::BootButton, INPUT_PULLUP);
 
-  // Initialize drivers in correct order
-  // (some drivers may depend on others being initialized first)
-  imu.begin();
-  sdCard.begin();
-  led.begin();
-  audio.begin();
-  wifi.begin();
+  const bool motionReady = motion_.begin();
+  const bool sdReady = sdCard_.begin();
+  const bool audioReady = audio_.begin(sdReady);
+  strip_.begin();
+  hardwareReady_ = motionReady && sdReady && audioReady;
+  display_.showBoot(hardwareReady_);
 
-  Serial.println("Initializing service layer...");
-  // 初始化服务层 - 服务层使用驱动程序
-  imuService.begin(&imu);
-  ledService.begin(&led);
-  audioService.begin(&audio);
-
-  Serial.println("Initializing application layer...");
-  // 应用层通过服务层访问驱动程序
-  saber.begin(&imuService, &ledService, &audioService);
-
-  Serial.println("Setting up HTTP API endpoints...");
-  // Initialize Web API with direct object references
-  webAPI.begin(&server, &saber, &ledService, &imuService);
-
-  Serial.println("===== System initialized successfully =====\n");
+  wifi_.begin(settings_.wifiSsid(), settings_.wifiPassword());
+  telemetry_.begin(settings_.blenderIp());
+  saber_.begin(&audio_, &strip_, &motion_, settings_.saber());
+  web_.begin(&server_, &saber_, &wifi_, &settings_, &telemetry_);
+  Serial.println("[ESABER] ready");
 }
 
-// Main loop: handle events and update state
 void SystemController::update() {
+  // Keep the audio decoder fed first: everything below can block.
+  saber_.update();
+  server_.handleClient();
+  wifi_.update();
+  telemetry_.update(motion_);
+  handleBootButton();
+  logDiagnosticsOnce();
 
-  // Handle incoming HTTP requests (non-blocking)
-  server.handleClient();
+  if (screenMode_ == ScreenMode::Eye) {
+    const MotionData& motion = motion_.data();
+    display_.drawEye(motion.roll / HardwareConfig::EyeGazeRadiansHorizontal,
+                     motion.pitch / HardwareConfig::EyeGazeRadiansVertical,
+                     settings_.saber().eyePattern);
+    return;
+  }
 
-  // Update saber logic (gestures, effects, etc.)
-  saber.tick();
+  // Throttle only the address lookup: building localUrl() every iteration
+  // churns the heap.  The driver itself skips the repaint while the address is
+  // unchanged, so this does not redraw the QR once a second.
+  const unsigned long now = millis();
+  if (now - lastQrRefresh_ > kQrRefreshMs) {
+    lastQrRefresh_ = now;
+    display_.showQr("ESABER WEB", wifi_.localUrl().c_str());
+  }
 }
 
-}  // namespace Core
+// Reported once, a few seconds in.  The headroom figure is the quickest way
+// to confirm or rule out a loop-task stack overflow behind the reboots; if it
+// trends towards zero the stack needs raising again.
+void SystemController::logDiagnosticsOnce() {
+  if (diagnosticsLogged_ || millis() < kDiagnosticsDelayMs) return;
+  diagnosticsLogged_ = true;
+  Serial.printf("[ESABER] loop stack headroom: %u bytes of %u, heap: %u free\n",
+                uxTaskGetStackHighWaterMark(nullptr), HardwareConfig::LoopStackSize,
+                ESP.getFreeHeap());
+}
+
+void SystemController::logResetReason() {
+  const esp_reset_reason_t reason = esp_reset_reason();
+  Serial.printf("[ESABER] reset reason: %s (%d)\n", resetReasonName(reason),
+                static_cast<int>(reason));
+  Serial.printf("[ESABER] heap: %u free / %u total, psram: %u free\n", ESP.getFreeHeap(),
+                ESP.getHeapSize(), ESP.getFreePsram());
+}
+
+void SystemController::handleBootButton() {
+  const bool pressed = digitalRead(HardwareConfig::BootButton) == LOW;
+  const unsigned long now = millis();
+
+  if (pressed != lastButtonState_) {
+    lastButtonState_ = pressed;
+    lastButtonChange_ = now;
+    // Arm on the press edge so holding the button does not retrigger.
+    if (pressed) buttonHandled_ = false;
+    return;
+  }
+
+  if (!pressed || buttonHandled_ || now - lastButtonChange_ < HardwareConfig::ButtonDebounce) return;
+
+  buttonHandled_ = true;
+  setScreenMode(screenMode_ == ScreenMode::Eye ? ScreenMode::Qr : ScreenMode::Eye);
+}
+
+void SystemController::setScreenMode(ScreenMode mode) {
+  screenMode_ = mode;
+  if (mode == ScreenMode::Qr) {
+    display_.showQr("ESABER WEB", wifi_.localUrl().c_str());
+    lastQrRefresh_ = millis();
+  }
+  // Going back to the eye needs no paint here: the driver notices that the
+  // panel was taken over and repaints itself on the next frame.
+}

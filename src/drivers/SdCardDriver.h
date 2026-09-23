@@ -1,6 +1,6 @@
 #pragma once
 
 class SdCardDriver {
-public:
+ public:
   bool begin();
 };

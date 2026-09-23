@@ -1,49 +1,51 @@
 #pragma once
 
-#include "../drivers/WiFiDriver.h"
-#include "../drivers/ImuDriver.h"
-#include "../drivers/LedDriver.h"
-#include "../drivers/SdCardDriver.h"
-#include "../drivers/AudioDriver.h"
-#include "../services/ImuService.h"
-#include "../services/LedService.h"
-#include "../services/AudioService.h"
-#include "../app/SaberController.h"
-#include "../api/WebAPIController.h"
-#include "../../include/config.h"
 #include <WebServer.h>
 
-namespace Core {
+#include "../app/SaberController.h"
+#include "../drivers/AudioOutput.h"
+#include "../drivers/DisplayDriver.h"
+#include "../drivers/MotionSensor.h"
+#include "../drivers/PixelStrip.h"
+#include "../drivers/SdCardDriver.h"
+#include "../services/MotionTelemetry.h"
+#include "../services/SettingsStore.h"
+#include "../services/WifiService.h"
+#include "../web/WebService.h"
 
-// 核心系统协调器 - 管理所有系统组件和初始化流程
-// 作用：
-//   - 聚合所有子系统（驱动、应用、API）
-//   - 协调初始化顺序
-//   - 管理主事件循环
+// Owns every subsystem, wires them together and drives the main loop.
+// The panel alternates between the eye and the WiFi QR code; the boot button
+// switches between the two.
 class SystemController {
-public:
+ public:
   void begin();
   void update();
 
-private:
-  // 驱动层 - 硬件抽象
-  WiFiDriver wifi;
-  ImuDriver imu;
-  LedDriver led;
-  SdCardDriver sdCard;
-  SelfAudioDriver audio;
+ private:
+  enum class ScreenMode : uint8_t { Eye, Qr };
 
-  // 服务层 - 业务逻辑协调
-  ImuService imuService;
-  LedService ledService;
-  AudioService audioService;
+  void logResetReason();
+  void logDiagnosticsOnce();
+  void handleBootButton();
+  void setScreenMode(ScreenMode mode);
 
-  // 应用层 - 业务逻辑
-  SaberController saber;
+  DisplayDriver display_;
+  SdCardDriver sdCard_;
+  AudioOutput audio_;
+  PixelStrip strip_;
+  MotionSensor motion_;
+  SettingsStore settings_;
+  WifiService wifi_;
+  MotionTelemetry telemetry_;
+  SaberController saber_;
+  WebServer server_{80};
+  WebService web_;
 
-  // API层 - 外部接口
-  WebServer server{80};
-  WebAPIController webAPI;
+  ScreenMode screenMode_ = ScreenMode::Eye;
+  bool hardwareReady_ = false;
+  bool lastButtonState_ = true;
+  bool buttonHandled_ = false;
+  bool diagnosticsLogged_ = false;
+  unsigned long lastButtonChange_ = 0;
+  unsigned long lastQrRefresh_ = 0;
 };
-
-}  // namespace Core

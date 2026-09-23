@@ -1,8 +1,16 @@
 #include <Arduino.h>
+
+#include "../include/HardwareConfig.h"
 #include "core/SystemController.h"
 
-// 系统协调器 - 负责所有子系统的初始化和事件循环
-Core::SystemController saberSystem;
+// Strong override of the Arduino core's weak hook.  The audio decoder, the web
+// server and the JSON responses all run on the loop task, and the 8 KB default
+// left too little headroom.
+size_t getArduinoLoopTaskStackSize(void) {
+  return HardwareConfig::LoopStackSize;
+}
+
+SystemController saberSystem;
 
 void setup() {
   saberSystem.begin();
@@ -11,4 +19,3 @@ void setup() {
 void loop() {
   saberSystem.update();
 }
-

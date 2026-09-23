@@ -1,23 +1,41 @@
 #include "SdCardDriver.h"
-#include "../../include/config.h"
-#include <Arduino.h>
-#include "SD_MMC.h"
+
+#include <SD_MMC.h>
+
+#include "../../include/HardwareConfig.h"
+
+namespace {
+
+constexpr const char* kMountPoint = "/sdcard";
+constexpr bool kOneBitMode = true;
+constexpr bool kFormatIfMountFailed = false;
+constexpr int kFrequencyKhz = 20000;
+// The card reported 0x107 (timeout) during init, which is typical of a marginal
+// signal.  A second attempt at half the clock often trains where the first
+// did not.  Everything the saber plays lives on the card, so it is worth it.
+constexpr int kRetryFrequencyKhz = 10000;
+constexpr uint16_t kRetryDelayMs = 50;
+
+bool mount(int frequencyKhz) {
+  SD_MMC.setPins(HardwareConfig::SdClk, HardwareConfig::SdCmd, HardwareConfig::SdD0, -1, -1, -1);
+  return SD_MMC.begin(kMountPoint, kOneBitMode, kFormatIfMountFailed, frequencyKhz);
+}
+
+}  // namespace
 
 bool SdCardDriver::begin() {
-
-    // 设置 SD 卡引脚
-    // SD_CLK: 时钟线
-    // SD_CMD: 控制线
-    // SD_D0 ~ SD_D3: 数据线, -1 表示 1bit 模式, 仅使用一个引脚, 其他三个引脚未使用
-    SD_MMC.setPins(Config::SD_CLK, Config::SD_CMD, Config::SD_D0, Config::SD_D1, Config::SD_D2, Config::SD_D3);
-
-    // 初始化 SD 卡
-    // mount_point: "/sdcard", mode1bit = true, format_if_fail = false
-    if (!SD_MMC.begin("/sdcard", true, false)) {
-      Serial.println("[SD] initialization FAILED");
-      return false;
-    }
-
-    Serial.println("[SD] initialization SUCCESS");
+  if (mount(kFrequencyKhz)) {
+    Serial.println("[SD] initialized");
     return true;
+  }
+
+  SD_MMC.end();
+  delay(kRetryDelayMs);
+  if (mount(kRetryFrequencyKhz)) {
+    Serial.printf("[SD] initialized at the reduced clock (%d kHz)\n", kRetryFrequencyKhz);
+    return true;
+  }
+
+  Serial.println("[SD] initialization failed - check the card is seated");
+  return false;
 }
