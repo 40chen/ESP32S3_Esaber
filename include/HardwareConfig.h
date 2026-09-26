@@ -18,7 +18,7 @@ constexpr int8_t SdD0 = 21;
 
 // -------------------------------------------------------------- LED strip
 constexpr uint8_t LedPin = 5;
-constexpr uint16_t LedCount = 32;
+constexpr uint16_t LedCount = 10;
 constexpr uint8_t DefaultBrightness = 100;
 // A 56 pixel WS2812 strip pulls well over 1 A at full white, which browns out
 // the rail and resets the MCU.  Clamp what the panel can ask for.
