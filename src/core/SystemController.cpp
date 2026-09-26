@@ -5,6 +5,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <ArduinoOTA.h>
+
 #include "../../include/HardwareConfig.h"
 
 namespace {
@@ -53,10 +55,16 @@ void SystemController::begin() {
   hardwareReady_ = motionReady && sdReady && audioReady;
   display_.showBoot(hardwareReady_);
 
-  wifi_.begin(settings_.wifiSsid(), settings_.wifiPassword());
+  wifi_.begin();
   telemetry_.begin(settings_.blenderIp());
   saber_.begin(&audio_, &strip_, &motion_, settings_.saber());
-  web_.begin(&server_, &saber_, &wifi_, &settings_, &telemetry_);
+  audio_.setVolume(settings_.volume());
+  web_.begin(&server_, &saber_, &wifi_, &settings_, &telemetry_, &audio_);
+
+  // Wireless firmware updates, so iterating no longer means opening the hilt.
+  ArduinoOTA.setHostname(HardwareConfig::OtaHostname);
+  ArduinoOTA.setPassword(HardwareConfig::DefaultOtaPassword);
+  ArduinoOTA.begin();
   Serial.println("[ESABER] ready");
 }
 
@@ -64,16 +72,19 @@ void SystemController::update() {
   // Keep the audio decoder fed first: everything below can block.
   saber_.update();
   server_.handleClient();
-  wifi_.update();
+  ArduinoOTA.handle();
   telemetry_.update(motion_);
+  settings_.tick();  // deferred NVS persistence for streamed settings
   handleBootButton();
   logDiagnosticsOnce();
+  reactToClash();
 
   if (screenMode_ == ScreenMode::Eye) {
     const MotionData& motion = motion_.data();
+    const SaberSettings& saber = settings_.saber();
     display_.drawEye(motion.roll / HardwareConfig::EyeGazeRadiansHorizontal,
-                     motion.pitch / HardwareConfig::EyeGazeRadiansVertical,
-                     settings_.saber().eyePattern);
+                     motion.pitch / HardwareConfig::EyeGazeRadiansVertical, saber.eyePattern,
+                     saber.red, saber.green, saber.blue);
     return;
   }
 
@@ -83,8 +94,24 @@ void SystemController::update() {
   const unsigned long now = millis();
   if (now - lastQrRefresh_ > kQrRefreshMs) {
     lastQrRefresh_ = now;
-    display_.showQr("ESABER WEB", wifi_.localUrl().c_str());
+    display_.showQr(wifi_.localUrl().c_str(), qrHint().c_str());
   }
+}
+
+// The hotspot is open (no password, per user request), so the line under the
+// QR names the network and says so.  ASCII-only: the GLCD font cannot render
+// Chinese here.
+String SystemController::qrHint() const {
+  return "Esaber-Setup (open)";
+}
+
+// The eye flinches when the blade hits something: one squint per clash, keyed
+// on the strike counter so a single hit never queues more than one flinch.
+void SystemController::reactToClash() {
+  const uint8_t strikes = saber_.strikeCount();
+  if (strikes == lastStrikeCount_) return;
+  lastStrikeCount_ = strikes;
+  display_.squint(HardwareConfig::ClashSquintMs);
 }
 
 // Reported once, a few seconds in.  The headroom figure is the quickest way
@@ -127,7 +154,7 @@ void SystemController::handleBootButton() {
 void SystemController::setScreenMode(ScreenMode mode) {
   screenMode_ = mode;
   if (mode == ScreenMode::Qr) {
-    display_.showQr("ESABER WEB", wifi_.localUrl().c_str());
+    display_.showQr(wifi_.localUrl().c_str(), qrHint().c_str());
     lastQrRefresh_ = millis();
   }
   // Going back to the eye needs no paint here: the driver notices that the

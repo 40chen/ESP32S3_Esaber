@@ -1,17 +1,28 @@
 #include "DisplayDriver.h"
 
 #include <math.h>
+#include <string.h>
 
 #include <qrcode.h>
 
 #include "../../include/HardwareConfig.h"
+#include "ESABER_QRBanner.h"
 
 namespace {
 
 constexpr int16_t kScreenSize = 240;
 constexpr uint8_t kQrVersion = 3;
 constexpr uint8_t kQrScale = 5;
-constexpr int16_t kQrTitleY = 16;
+// QR screen layout follows the visual spec (ESABER_visual_design_spec.md §三):
+// Chinese banner on top, QR block in the middle, two grey ASCII lines below.
+constexpr int16_t kQrBannerWidth = 200;  // artwork 196px + 4 blank padding columns
+constexpr int16_t kQrBannerHeight = 16;
+constexpr int16_t kQrBannerY = 14;   // banner top edge
+constexpr int16_t kQrTopY = 46;      // QR block top edge
+constexpr int16_t kQrUrlY = 210;     // device URL line, centre-anchored, size 2
+constexpr int16_t kQrHintY = 228;    // hotspot credentials, centre-anchored, size 1
+constexpr uint16_t kQrUrlGrey = 0x632C;   // #666666
+constexpr uint16_t kQrHintGrey = 0x9CD3;  // #999999
 
 constexpr uint8_t kScleraBands = 14;
 // Soft shadow under the upper lid, then plain white, then a gentle shade
@@ -64,11 +75,13 @@ constexpr int16_t kClosedLidThickness = 6;
 
 // A real iris is darkest at the limbal ring and brightens towards the pupil,
 // with a pale halo around it.  The reverse reads as a black hole.
-constexpr Rgb kIrisRim{12, 34, 92};
-constexpr Rgb kIrisOuter{26, 88, 180};
-constexpr Rgb kIrisInner{132, 206, 255};
-constexpr Rgb kIrisFibre{74, 156, 228};
+// All iris colours derive from one hue so the eye can follow the blade colour.
+constexpr uint16_t kHueFullCircle = 65535;
+constexpr uint16_t kDefaultIrisHue = 25490;  // the original blue, hue of (26,88,180)
 constexpr Rgb kPupil{6, 8, 16};
+
+// A clash makes the eye flinch: openness dips towards kSquintDepth and back.
+constexpr float kSquintDepth = 0.22f;
 
 uint16_t color565(const Rgb& color) {
   return static_cast<uint16_t>((static_cast<uint16_t>(color.red & 0xF8) << 8) |
@@ -113,6 +126,51 @@ Rgb sampleSclera(float position) {
                    (position - kScleraShadeStart) / (1.0f - kScleraShadeStart));
 }
 
+// Hue (0-65535) of an RGB colour; greys and black fall back to the default
+// blue so a colourless blade can never wash the iris out.
+uint16_t rgbToHue(const Rgb& color, uint16_t fallback) {
+  const uint8_t maxChannel = max(color.red, max(color.green, color.blue));
+  const uint8_t minChannel = min(color.red, min(color.green, color.blue));
+  if (maxChannel == 0 || maxChannel == minChannel) return fallback;
+
+  const float delta = static_cast<float>(maxChannel - minChannel);
+  float sector;
+  if (maxChannel == color.red) {
+    sector = (static_cast<float>(color.green) - static_cast<float>(color.blue)) / delta;
+  } else if (maxChannel == color.green) {
+    sector = 2.0f + (static_cast<float>(color.blue) - static_cast<float>(color.red)) / delta;
+  } else {
+    sector = 4.0f + (static_cast<float>(color.red) - static_cast<float>(color.green)) / delta;
+  }
+  float hue = sector * (static_cast<float>(kHueFullCircle) / 6.0f);
+  if (hue < 0.0f) hue += static_cast<float>(kHueFullCircle);
+  return static_cast<uint16_t>(hue);
+}
+
+// HSV to RGB for iris shading; sat/val are plain 0-255 channel scales.
+Rgb hsvToRgb(uint16_t hue, uint8_t sat, uint8_t val) {
+  const float h = static_cast<float>(hue) / (static_cast<float>(kHueFullCircle) / 6.0f);
+  const float s = static_cast<float>(sat) / 255.0f;
+  const float v = static_cast<float>(val) / 255.0f;
+  const uint8_t sector = static_cast<uint8_t>(static_cast<int>(h) % 6);
+  const float fraction = h - static_cast<float>(static_cast<int>(h));
+  const auto scale = [v, s](float factor) {
+    return static_cast<uint8_t>(v * (1.0f - s * factor) * 255.0f + 0.5f);
+  };
+  const uint8_t p = scale(1.0f);
+  const uint8_t q = scale(fraction);
+  const uint8_t t = scale(1.0f - fraction);
+  const uint8_t vv = static_cast<uint8_t>(v * 255.0f + 0.5f);
+  switch (sector) {
+    case 0: return Rgb{vv, t, p};
+    case 1: return Rgb{q, vv, p};
+    case 2: return Rgb{p, vv, t};
+    case 3: return Rgb{p, q, vv};
+    case 4: return Rgb{t, p, vv};
+    default: return Rgb{vv, p, q};
+  }
+}
+
 }  // namespace
 
 void DisplayDriver::begin() {
@@ -142,23 +200,30 @@ void DisplayDriver::showBoot(bool ready) {
   panel_ = Panel::Boot;
 }
 
-void DisplayDriver::showQr(const char* title, const char* url) {
+void DisplayDriver::showQr(const char* url, const char* hint) {
   // Re-rendering the QR costs tens of milliseconds of blocking SPI, and the
   // address only changes when the network does.
-  if (panel_ == Panel::Qr && qrUrl_ == url) return;
+  if (panel_ == Panel::Qr && qrUrl_ == url && qrHint_ == (hint ? hint : "")) return;
   panel_ = Panel::Qr;
   qrUrl_ = url;
+  qrHint_ = hint ? hint : "";
 
   QRCode qrcode;
   uint8_t qrcodeData[qrcode_getBufferSize(kQrVersion)];
   qrcode_initText(&qrcode, qrcodeData, kQrVersion, ECC_LOW, url);
 
   tft_.fillScreen(TFT_WHITE);
-  drawCenteredText(title, kQrTitleY, 2, TFT_BLACK);
+  // User-approved Chinese instruction as a 1-bit bitmap: the GLCD font has no
+  // CJK glyphs.  Drawn 200px wide (25 bytes per row) although the artwork is
+  // 196px: 200 is byte aligned, so the row layout matches both TFT_eSPI's and
+  // Adafruit_GFX's drawBitmap bit-packing conventions, and the extra columns
+  // are blank padding.
+  tft_.drawBitmap((kScreenSize - kQrBannerWidth) / 2, kQrBannerY, kQrBannerJoin,
+                  kQrBannerWidth, kQrBannerHeight, TFT_BLACK);
 
   const uint16_t qrPixels = static_cast<uint16_t>(qrcode.size) * kQrScale;
   const int16_t left = (kScreenSize - qrPixels) / 2;
-  const int16_t top = (kScreenSize - qrPixels) / 2 + kQrTitleY / 2;
+  const int16_t top = kQrTopY;
 
   for (uint8_t row = 0; row < qrcode.size; ++row) {
     for (uint8_t column = 0; column < qrcode.size; ++column) {
@@ -168,9 +233,36 @@ void DisplayDriver::showQr(const char* title, const char* url) {
       }
     }
   }
+
+  // ASCII-only lines below the QR: device address in dark grey, hotspot
+  // credentials in a lighter grey.
+  if (url != nullptr && *url != '\0') {
+    const char* shown = url;
+    if (strncmp(shown, "http://", 7) == 0) shown += 7;
+    drawCenteredText(shown, kQrUrlY, 2, kQrUrlGrey);
+  }
+  if (qrHint_.length() > 0) {
+    drawCenteredText(qrHint_.c_str(), kQrHintY, 1, kQrHintGrey);
+  }
 }
 
-void DisplayDriver::drawEye(float lookX, float lookY, EyePattern pattern) {
+void DisplayDriver::squint(unsigned long durationMs) {
+  squintStart_ = millis();
+  squintUntil_ = squintStart_ + durationMs;
+}
+
+// Envelope for the clash flinch: dips towards kSquintDepth at mid-squint and
+// recovers, multipled into whatever the blink machinery is doing.
+float DisplayDriver::squintEnvelope(unsigned long now) const {
+  if (now >= squintUntil_) return 1.0f;
+  const float phase = static_cast<float>(now - squintStart_) /
+                      static_cast<float>(squintUntil_ - squintStart_);
+  const float triangle = 1.0f - fabsf(2.0f * phase - 1.0f);
+  return kSquintDepth + (1.0f - kSquintDepth) * smoothStep(triangle);
+}
+
+void DisplayDriver::drawEye(float lookX, float lookY, EyePattern pattern, uint8_t bladeRed,
+                            uint8_t bladeGreen, uint8_t bladeBlue) {
   if (!canvasReady_) return;
 
   const unsigned long now = millis();
@@ -178,7 +270,8 @@ void DisplayDriver::drawEye(float lookX, float lookY, EyePattern pattern) {
   updateGaze(now, clampUnit(lookX), clampUnit(lookY), attentive);
   updateBlink(now);
 
-  const float openness = attentive ? openness_ : kSleepOpenness;
+  const float baseOpenness = attentive ? openness_ : kSleepOpenness;
+  const float openness = baseOpenness * squintEnvelope(now);
   if (!frameChanged(openness, pattern)) return;
 
   const int16_t irisX =
@@ -198,7 +291,9 @@ void DisplayDriver::drawEye(float lookX, float lookY, EyePattern pattern) {
   if (attentive) {
     buildLidProfile(angry ? openness * kAngryOpenness : openness, angry);
     paintSclera();
-    paintIris(irisX, irisY);
+    const uint16_t irisHue =
+        rgbToHue(Rgb{bladeRed, bladeGreen, bladeBlue}, kDefaultIrisHue);
+    paintIris(irisX, irisY, irisHue);
     maskOutsideEye();
     paintLidStrokes();
     if (angry) paintBrow();
@@ -316,9 +411,16 @@ void DisplayDriver::paintSclera() {
   }
 }
 
-void DisplayDriver::paintIris(int16_t centerX, int16_t centerY) {
+void DisplayDriver::paintIris(int16_t centerX, int16_t centerY, uint16_t hue) {
+  // The iris palette tracks the blade colour: dark limbal ring, saturated
+  // body, pale halo around the pupil.
+  const Rgb rim = hsvToRgb(hue, 255, 38);
+  const Rgb outer = hsvToRgb(hue, 235, 150);
+  const Rgb inner = hsvToRgb(hue, 150, 235);
+  const Rgb fibre = hsvToRgb(hue, 205, 190);
+
   // Leaves a thin dark limbal ring visible around the body.
-  canvas_.fillCircle(centerX, centerY, kIrisRadius, color565(kIrisRim));
+  canvas_.fillCircle(centerX, centerY, kIrisRadius, color565(rim));
 
   // Rings tile contiguously from the rim inwards so no dark band is left
   // between the body and the pupil.
@@ -328,7 +430,7 @@ void DisplayDriver::paintIris(int16_t centerX, int16_t centerY) {
     const int16_t radius =
         bodyRadius - static_cast<int16_t>(static_cast<float>(bodyRadius - kPupilRadius) * position);
     canvas_.fillCircle(centerX, centerY, radius,
-                       color565(lerpColor(kIrisOuter, kIrisInner, position)));
+                       color565(lerpColor(outer, inner, position)));
   }
 
   // Radial fibres are what make an iris read as an iris rather than a disc.
@@ -342,7 +444,7 @@ void DisplayDriver::paintIris(int16_t centerX, int16_t centerY) {
                      centerY + static_cast<int16_t>(sine * fibreInner),
                      centerX + static_cast<int16_t>(cosine * fibreOuter),
                      centerY + static_cast<int16_t>(sine * fibreOuter),
-                     color565(kIrisFibre));
+                     color565(fibre));
   }
 
   canvas_.fillCircle(centerX, centerY, kPupilRadius, color565(kPupil));

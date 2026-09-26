@@ -1,0 +1,106 @@
+import bpy
+import socket
+import threading
+import numpy as np
+
+# --- 配置区域 ---
+EMPTY_OBJ_NAME = "Empty"
+UDP_PORT = 5005
+HOST_IP = '0.0.0.0'
+FPS = 60
+
+# 传感器到 Blender 坐标系映射
+# 如果你发现方向仍不对，可以调整这些符号或顺序
+SENSOR_POS_SCALE = np.array([1.0, 1.0, -1.0], dtype=float)
+SENSOR_QUAT_SIGN = np.array([1.0, 1.0, -1.0, -1.0], dtype=float)
+
+latest_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+latest_pos = np.array([0.0, 0.0, 0.0], dtype=float)
+is_running = False
+
+latest_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+latest_pos = np.array([0.0, 0.0, 0.0], dtype=float)
+is_running = False
+
+
+def udp_listener():
+    global is_running, latest_quat, latest_pos
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((HOST_IP, UDP_PORT))
+    sock.settimeout(1.0)
+
+    print(f"📡 UDP 监听已启动，等待端口 {UDP_PORT} 的数据...")
+    while is_running:
+        try:
+            data, addr = sock.recvfrom(1024)
+            message = data.decode('utf-8').strip()
+            print(f"收到来自 {addr} 的数据: {message}")
+            parts = message.split(',')
+            if len(parts) == 7:
+                values = list(map(float, parts))
+                latest_quat = np.array(values[0:4], dtype=float)
+                latest_pos = np.array(values[4:7], dtype=float)
+                norm = np.linalg.norm(latest_quat)
+                if norm > 0:
+                    latest_quat /= norm
+            else:
+                print(f"收到无效数据: {message}")
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"接收错误: {e}")
+
+    sock.close()
+    print("📡 UDP 监听已停止")
+
+
+class UDPModalOperator(bpy.types.Operator):
+    bl_idname = "wm.udp_modal_operator"
+    bl_label = "UDP 动捕接收器"
+    _timer = None
+
+    def modal(self, context, event):
+        if event.type == 'ESC':
+            return self.cancel(context)
+
+        if event.type == 'TIMER':
+            empty_obj = bpy.data.objects.get(EMPTY_OBJ_NAME)
+            if empty_obj:
+                mapped_quat = latest_quat * SENSOR_QUAT_SIGN
+                mapped_pos = latest_pos * SENSOR_POS_SCALE
+                empty_obj.rotation_mode = 'QUATERNION'
+                empty_obj.rotation_quaternion = mapped_quat.tolist()
+                empty_obj.location = mapped_pos.tolist()
+
+        return {'PASS_THROUGH'}
+
+    def execute(self, context):
+        global is_running
+        is_running = True
+        thread = threading.Thread(target=udp_listener, daemon=True)
+        thread.start()
+        self._timer = context.window_manager.event_timer_add(1.0 / FPS, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        print("🚀 接收器启动中...")
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        global is_running
+        is_running = False
+        context.window_manager.event_timer_remove(self._timer)
+        print("⏹️ 接收器已停止")
+        return {'CANCELLED'}
+
+
+def register():
+    bpy.utils.register_class(UDPModalOperator)
+
+
+def unregister():
+    bpy.utils.unregister_class(UDPModalOperator)
+
+
+if __name__ == "__main__":
+    register()
+    bpy.ops.wm.udp_modal_operator()

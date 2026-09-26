@@ -14,6 +14,7 @@ class AudioOutput {
   bool begin(bool sdReady);
   void loop();
   void play(const char* file);
+  void setVolume(uint8_t volume);
   ~AudioOutput();
 
  private:

@@ -15,4 +15,5 @@ class MotionTelemetry {
   WiFiUDP udp_;
   IPAddress target_;
   unsigned long lastSend_ = 0;
+  uint8_t sequence_ = 0;  // wire seq byte, wraps mod 256
 };

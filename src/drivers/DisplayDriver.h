@@ -17,12 +17,18 @@ class DisplayDriver {
   void begin();
 
   void showBoot(bool ready);
-  void showQr(const char* title, const char* url);
+  // hint is an optional ASCII-only credentials line drawn under the QR block.
+  void showQr(const char* url, const char* hint = nullptr);
 
   // lookX / lookY are normalised gaze targets in [-1, 1]; the driver smooths
   // them, adds idle movement and blinking, and pushes a frame only when the
-  // result actually changed.
-  void drawEye(float lookX, float lookY, EyePattern pattern);
+  // picture actually changed.  bladeRed/Green/Blue tint the iris so the eye
+  // follows the blade colour.
+  void drawEye(float lookX, float lookY, EyePattern pattern, uint8_t bladeRed,
+               uint8_t bladeGreen, uint8_t bladeBlue);
+
+  // One-shot flinch: openness dips and recovers over durationMs.
+  void squint(unsigned long durationMs);
 
  private:
   // Which screen currently owns the panel.  The eye only has to clear the
@@ -65,7 +71,7 @@ class DisplayDriver {
   // Recomputes the lid curves for the current opening and expression.
   void buildLidProfile(float openness, bool scowl);
   void paintSclera();
-  void paintIris(int16_t centerX, int16_t centerY);
+  void paintIris(int16_t centerX, int16_t centerY, uint16_t hue);
   void maskOutsideEye();
   void paintLidStrokes();
   void paintBrow();
@@ -73,6 +79,9 @@ class DisplayDriver {
 
   void updateGaze(unsigned long now, float targetX, float targetY, bool attentive);
   void updateBlink(unsigned long now);
+
+  // Envelope for the clash flinch; 1.0 when no squint is active.
+  float squintEnvelope(unsigned long now) const;
 
   // Returns true when the frame differs enough from the last pushed frame to
   // be worth drawing and clocking out.
@@ -86,7 +95,8 @@ class DisplayDriver {
   bool canvasReady_ = false;
 
   Panel panel_ = Panel::Boot;
-  String qrUrl_;  // last address rendered, so an unchanged QR is not redrawn
+  String qrUrl_;   // last address rendered, so an unchanged QR is not redrawn
+  String qrHint_;  // last hint line rendered, same purpose
 
   int16_t upperLid_[kCanvasWidth] = {0};
   int16_t lowerLid_[kCanvasWidth] = {0};
@@ -105,6 +115,8 @@ class DisplayDriver {
   unsigned long blinkTimer_ = 0;
   unsigned long idleTimer_ = 0;
   unsigned long idleDue_ = 0;
+  unsigned long squintStart_ = 0;
+  unsigned long squintUntil_ = 0;
 
   float pushedGazeX_ = 2.0f;
   float pushedGazeY_ = 2.0f;

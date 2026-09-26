@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "../../include/AppTypes.h"
+#include "../../include/HardwareConfig.h"
 #include "../drivers/AudioOutput.h"
 #include "../drivers/MotionSensor.h"
 #include "../drivers/PixelStrip.h"
@@ -19,9 +20,14 @@ class SaberController {
   void setSettings(const SaberSettings& settings);
   void setPower(bool enabled);
 
+  // Incremented on every detected clash; consumers compare against their last
+  // seen value to trigger one-shot reactions (the eye squint).
+  uint8_t strikeCount() const { return strikeCount_; }
+
  private:
   static constexpr uint8_t kImuSampleCount = 8;
   static constexpr uint8_t kEffectIntervalMs = 20;
+  static constexpr uint8_t kRetractFadeSteps = 3;
 
   void readGesture();
   void handleStrike(unsigned long now);
@@ -29,9 +35,13 @@ class SaberController {
   void updateHum(unsigned long now);
   void updateLighting(unsigned long now);
   void applyPulse(unsigned long now);
+  void applyUnstable(unsigned long now);
   void updateRainbow(unsigned long now);
   void updateScanner(unsigned long now);
-  void startStrike();
+  void updateFire(unsigned long now);
+  void updateSparkle(unsigned long now);
+  void updateRetract(unsigned long now);
+  void startStrike(uint8_t intensity);
   void playRandomSound(const char* const sounds[], uint8_t count);
   uint8_t ledBrightness() const;
 
@@ -46,6 +56,7 @@ class SaberController {
   bool strikePlaying_ = false;
   bool strikeEffect_ = false;
   bool turnOnAnimation_ = false;
+  bool retracting_ = false;
 
   unsigned long gestureTimer_ = 0;
   unsigned long pulseTimer_ = 0;
@@ -57,11 +68,13 @@ class SaberController {
   unsigned long hitTimer_ = 0;
   unsigned long gestureCounter_ = 0;
   uint8_t gestureCooldown_ = 0;
+  uint8_t strikeCount_ = 0;
+  uint16_t hitDuration_ = HardwareConfig::HitBaseMs;
   uint8_t animationPixel_ = 0;
   int pulseOffset_ = 0;
   uint16_t rainbowHue_ = 0;
   int8_t scannerDirection_ = 1;
   uint16_t scannerPixel_ = 0;
-  float rollSamples_[kImuSampleCount] = {0.0f};
   float pitchSamples_[kImuSampleCount] = {0.0f};
+  uint8_t fireHeat_[HardwareConfig::LedCount] = {0};
 };

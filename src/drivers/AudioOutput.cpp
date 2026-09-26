@@ -79,6 +79,10 @@ void AudioOutput::loop() {
   if (ready_) audio_->loop();
 }
 
+void AudioOutput::setVolume(uint8_t volume) {
+  if (ready_) audio_->setVolume(volume);
+}
+
 void AudioOutput::play(const char* file) {
   if (ready_) audio_->connecttoFS(SD_MMC, file);
 }

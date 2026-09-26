@@ -3,27 +3,22 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-// Brings up a configuration access point and optionally joins a home network.
+// Serves the web console from the device's own access point.
 //
-// The access point stays up alongside the station connection.  Tearing it down
-// with softAPdisconnect() + WiFi.mode(WIFI_STA) while the HTTP server had a
-// client attached was both a crash risk and a lockout risk: a wrong password
-// left no way back in.
+// The saber is AP-only by design: joining a home router created a lockout
+// risk (wrong password = no way back in without serial) for little gain, and
+// the fixed 192.168.4.1 address needs no discovery.  The hotspot itself is
+// open (no password) by user request; OTA keeps its own flash password.
 class WifiService {
  public:
-  void begin(const String& ssid, const String& password);
-  void connect(const String& ssid, const String& password);
-  void update();
+  void begin();
 
-  bool connected() const { return WiFi.status() == WL_CONNECTED; }
-  bool connecting() const { return connecting_; }
+  // A phone or laptop is currently joined to the device hotspot.
+  bool stationJoined() const { return WiFi.softAPgetStationNum() > 0; }
 
   String localUrl() const;
   String activeSsid() const;
 
  private:
   void startAccessPoint();
-
-  unsigned long connectStart_ = 0;
-  bool connecting_ = false;
 };
