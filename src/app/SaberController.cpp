@@ -15,8 +15,8 @@ constexpr uint16_t kPulseRandomMax = kPulseRandomRange - 1;
 constexpr uint8_t kChannelMaximum = 255;
 constexpr uint16_t kHueFullCircle = 65535;
 
-constexpr const char* kPowerOnSound = "saber.flac";
-constexpr const char* kPowerOffSound = "out1.wav";
+constexpr const char* kPowerOnSound = "endlock1.wav";
+constexpr const char* kPowerOffSound = "endlock2.wav";
 
 const char* const kStrikeSounds[kStrikeSoundCount] = {
     "clsh1.wav", "clsh2.wav", "clsh3.wav", "clsh4.wav", "clsh5.wav",
@@ -60,17 +60,28 @@ void SaberController::begin(AudioOutput* audio, PixelStrip* strip, MotionSensor*
   motion_ = motion;
   settings_ = initialSettings;
   strip_->setBrightness(ledBrightness());
+  audio_->setVolume(audioVolume());
   // The blade starts off, so no ignition sound here: it used to play on every
   // boot whether or not the saber was actually on.
   strip_->clear();
+  // The pitch history starts out as zeros, so a saber that happens to be held
+  // past OpenThreshold at boot would look like a twist and ignite itself.  The
+  // first window is collected before the threshold is trusted.
+  gestureWarmup_ = kImuSampleCount;
 }
 
 // settings_.brightness is a user-facing percentage; the hardware scale is
-// derived here so the strip never exceeds the brown-out-safe ceiling.
+// derived here so the strip never exceeds the brown-out-safe ceiling.  What
+// actually reaches the LEDs is then capped again by the current limiter in
+// PixelStrip, which is the part that knows what the colours cost.
 uint8_t SaberController::ledBrightness() const {
-  return static_cast<uint8_t>(
-      min<uint32_t>(static_cast<uint32_t>(settings_.brightness) * HardwareConfig::MaxLedBrightness / 100,
-                    HardwareConfig::MaxLedBrightness));
+  return static_cast<uint8_t>(min<uint32_t>(
+      static_cast<uint32_t>(settings_.brightness) * HardwareConfig::MaxLedBrightness / 100,
+      HardwareConfig::MaxLedBrightness));
+}
+
+uint8_t SaberController::audioVolume() const {
+  return min(settings_.volume, static_cast<uint8_t>(100));
 }
 
 void SaberController::update() {
@@ -101,12 +112,18 @@ void SaberController::update() {
 void SaberController::setSettings(const SaberSettings& settings) {
   const bool powerChanged = settings.power != settings_.power;
   const bool brightnessChanged = settings.brightness != settings_.brightness;
+  const bool volumeChanged = settings.volume != settings_.volume;
   const bool colorChanged = settings.red != settings_.red || settings.green != settings_.green ||
                             settings.blue != settings_.blue;
   settings_ = settings;
 
   if (brightnessChanged) {
     strip_->setBrightness(ledBrightness());
+  }
+  if (volumeChanged) {
+    settings_.volume = audioVolume();
+    // The codec takes the new level immediately, so this needs no repaint.
+    audio_->setVolume(settings_.volume);
   }
   if (powerChanged) {
     setPower(settings.power);
@@ -127,16 +144,21 @@ void SaberController::setPower(bool enabled) {
   const unsigned long now = millis();
   if (enabled) {
     audio_->play(kPowerOnSound);
+    audio_->setAmplifierEnabled(true);
     humTimer_ = now - HardwareConfig::HumTimeout + HardwareConfig::HumActivationDelay;
     turnOnAnimation_ = true;
     animationPixel_ = 0;
     retracting_ = false;
     humPlaying_ = true;
-    // Deliberately no strip fill here.  Lighting all 56 pixels at once both
+    // Deliberately no strip fill here.  Lighting every pixel at once both
     // defeated the ignition animation and spiked the supply hard enough to
     // brown out the MCU; updateLighting now ramps the blade up.
   } else {
     audio_->play(kPowerOffSound);
+    // After the play() call, never before: play() claims the amplifier so the
+    // retraction sound is heard, and releasing it afterwards lets the driver
+    // keep the amplifier up until that sound has finished.
+    audio_->setAmplifierEnabled(false);
     humPlaying_ = false;
     swingReady_ = false;
     strikePlaying_ = false;
@@ -164,6 +186,14 @@ void SaberController::readGesture() {
   const uint8_t sampleIndex = gestureCounter_ & (kImuSampleCount - 1);
   pitchSamples_[sampleIndex] =
       atan2(-accelX, sqrt(square(accelY) + square(accelZ))) * kRadiansToDegrees;
+
+  // Fill the window before trusting it: only once every slot holds a real
+  // sample is the spread between them meaningful.
+  if (gestureWarmup_ > 0) {
+    --gestureWarmup_;
+    ++gestureCounter_;
+    return;
+  }
 
   float pitchMinimum = pitchSamples_[0];
   float pitchMaximum = pitchMinimum;
@@ -225,9 +255,9 @@ void SaberController::handleSwing(unsigned long now) {
   swingTimer_ = now;
 }
 
-void SaberController::updateHum(unsigned long now) {
+void SaberController::updateHum(unsigned long now) {    // The hum is a continuous sound that plays while the blade is on.  It is
   if (!humPlaying_ || now - humTimer_ <= HardwareConfig::HumTimeout) return;
-  audio_->play("hum1.wav");
+  audio_->play("111.wav");
   humTimer_ = now;
   swingReady_ = true;
   strikePlaying_ = false;
@@ -337,16 +367,18 @@ void SaberController::applyUnstable(unsigned long now) {
   strip_->show();
 }
 
-// Fire: heat is injected at the hilt, drifts towards the tip, cools on the
-// way and renders through a black-red-orange-yellow ramp.  A one-byte heat
-// map keeps the per-frame cost tiny on the loop task.
+// Fire: heat is injected at the hilt, drifts towards the tip, cools on the way
+// and renders through a black-red-orange-yellow ramp.  A one-byte heat map
+// keeps the per-frame cost tiny on the loop task.
 void SaberController::updateFire(unsigned long now) {
   if (now - effectTimer_ < HardwareConfig::FireIntervalMs) return;
   effectTimer_ = now;
 
   for (uint16_t index = 0; index < HardwareConfig::LedCount; ++index) {
-    const uint8_t cooling = esp_random() % ((HardwareConfig::FireCooling * 10) / HardwareConfig::LedCount + 2);
-    fireHeat_[index] = fireHeat_[index] > cooling ? static_cast<uint8_t>(fireHeat_[index] - cooling) : 0;
+    const uint8_t cooling =
+        esp_random() % ((HardwareConfig::FireCooling * 10) / HardwareConfig::LedCount + 2);
+    fireHeat_[index] =
+        fireHeat_[index] > cooling ? static_cast<uint8_t>(fireHeat_[index] - cooling) : 0;
   }
   for (uint16_t index = HardwareConfig::LedCount - 1; index >= 2; --index) {
     const uint16_t source = index - 2;
@@ -382,9 +414,9 @@ void SaberController::updateSparkle(unsigned long now) {
 }
 
 // Reverse of the ignition: the blade collapses from both ends towards the
-// middle.  The pixels about to be drained fade over the last few steps, so
-// the collapse front carries a short dark gradient instead of snapping to
-// black pixel by pixel.
+// middle.  The pixels about to be drained fade over the last few steps, so the
+// collapse front carries a short dark gradient instead of snapping to black
+// pixel by pixel.
 void SaberController::updateRetract(unsigned long now) {
   if (now - effectTimer_ < HardwareConfig::FlashDelay) return;
   effectTimer_ = now;
@@ -393,8 +425,8 @@ void SaberController::updateRetract(unsigned long now) {
   for (uint8_t distance = 1; distance <= kRetractFadeSteps; ++distance) {
     const int16_t index = edge - distance;
     if (index < 0) break;
-    // distance 1..3 -> 3/4, 2/4, 1/4 of full colour: every pixel decays a
-    // step per frame until the edge reaches it and it goes dark.
+    // distance 1..3 -> 3/4, 2/4, 1/4 of full colour: every pixel decays a step
+    // per frame until the edge reaches it and it goes dark.
     const uint8_t brightness = static_cast<uint8_t>(
         kChannelMaximum * (kRetractFadeSteps + 1 - distance) / (kRetractFadeSteps + 1));
     const int16_t mirrored = HardwareConfig::LedCount - 1 - index;
@@ -446,7 +478,6 @@ void SaberController::startStrike(uint8_t intensity) {
                  static_cast<uint16_t>(intensity * HardwareConfig::HitExtraMs / 100);
   hitTimer_ = millis();
   strikeEffect_ = true;
-  ++strikeCount_;
 }
 
 void SaberController::playRandomSound(const char* const sounds[], uint8_t count) {

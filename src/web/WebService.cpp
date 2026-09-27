@@ -5,6 +5,7 @@
 namespace {
 
 constexpr size_t kStatusBufferSize = 512;
+constexpr size_t kJsonCapacity = 512;
 
 String effectName(uint8_t effect) {
   static const char* const names[kSaberEffectCount] = {"solid",  "pulse",   "rainbow",
@@ -729,13 +730,12 @@ setInterval(poll, 2500);
 }  // namespace
 
 void WebService::begin(WebServer* server, SaberController* saber, WifiService* wifi,
-                       SettingsStore* settings, MotionTelemetry* telemetry, AudioOutput* audio) {
+                       SettingsStore* settings, MotionTelemetry* telemetry) {
   server_ = server;
   saber_ = saber;
   wifi_ = wifi;
   settings_ = settings;
   telemetry_ = telemetry;
-  audio_ = audio;
 
   server_->on("/", HTTP_GET, [this]() { handleRoot(); });
   server_->on("/api/status", HTTP_GET, [this]() { handleStatus(); });
@@ -764,13 +764,19 @@ void WebService::handleStatus() {
   json["eye"] = static_cast<uint8_t>(saber.eyePattern);
   json["effectName"] = effectName(static_cast<uint8_t>(saber.effect));
   json["eyeName"] = eyeName(static_cast<uint8_t>(saber.eyePattern));
+  json["volume"] = saber.volume;
+  // The console scales its slider by this, so 100 is simply "as loud as the
+  // firmware will go" -- see MaxCodecVolume for what that costs.
+  json["volumeMax"] = 100;
   json["blenderIp"] = settings_->blenderIp();
-  json["volume"] = settings_->volume();
-  json["volumeMax"] = HardwareConfig::MaxAudioVolume;
+  // Build stamp, so the console can be told apart from a cached copy of an
+  // older one and a flashed build from one that never made it onto the board.
+  json["firmware"] = __DATE__ " " __TIME__;
 
+  // Always the access point now, so these are the device's own address and
+  // network name rather than a state that can change.
   JsonObject wifi = json["wifi"].to<JsonObject>();
-  wifi["connected"] = wifi_->stationJoined();
-  wifi["ssid"] = wifi_->activeSsid();
+  wifi["ssid"] = wifi_->ssid();
   wifi["url"] = wifi_->localUrl();
 
   char output[kStatusBufferSize];
@@ -780,15 +786,14 @@ void WebService::handleStatus() {
 
 void WebService::handleSettings() {
   SaberSettings settings = saber_->settings();
-  // Clamp every channel server-side: a missing toInt() parse or a hand-rolled
-  // request must never push a raw uint8_t negative or out of range.
-  settings.red = static_cast<uint8_t>(constrain(server_->arg("r").toInt(), 0, 255));
-  settings.green = static_cast<uint8_t>(constrain(server_->arg("g").toInt(), 0, 255));
-  settings.blue = static_cast<uint8_t>(constrain(server_->arg("b").toInt(), 0, 255));
+  if (server_->hasArg("r")) settings.red = server_->arg("r").toInt();
+  if (server_->hasArg("g")) settings.green = server_->arg("g").toInt();
+  if (server_->hasArg("b")) settings.blue = server_->arg("b").toInt();
   if (server_->hasArg("brightness")) {
     settings.brightness =
         static_cast<uint8_t>(constrain(server_->arg("brightness").toInt(), 0, 100));
   }
+  if (server_->hasArg("volume")) settings.volume = server_->arg("volume").toInt();
   if (server_->hasArg("effect")) {
     const int effect = server_->arg("effect").toInt();
     if (effect >= 0 && effect < kSaberEffectCount) {
@@ -800,11 +805,6 @@ void WebService::handleSettings() {
     if (eye >= 0 && eye < kEyePatternCount) {
       settings.eyePattern = static_cast<EyePattern>(eye);
     }
-  }
-  if (server_->hasArg("volume")) {
-    const int volume = constrain(server_->arg("volume").toInt(), 0, HardwareConfig::MaxAudioVolume);
-    settings_->saveVolume(static_cast<uint8_t>(volume));
-    audio_->setVolume(static_cast<uint8_t>(volume));
   }
 
   settings_->saveSaber(settings);

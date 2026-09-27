@@ -3,7 +3,6 @@
 #include <Arduino.h>
 
 #include "../../include/AppTypes.h"
-#include "../../include/HardwareConfig.h"
 #include "../drivers/AudioOutput.h"
 #include "../drivers/MotionSensor.h"
 #include "../drivers/PixelStrip.h"
@@ -19,10 +18,6 @@ class SaberController {
   const SaberSettings& settings() const { return settings_; }
   void setSettings(const SaberSettings& settings);
   void setPower(bool enabled);
-
-  // Incremented on every detected clash; consumers compare against their last
-  // seen value to trigger one-shot reactions (the eye squint).
-  uint8_t strikeCount() const { return strikeCount_; }
 
  private:
   static constexpr uint8_t kImuSampleCount = 8;
@@ -44,6 +39,7 @@ class SaberController {
   void startStrike(uint8_t intensity);
   void playRandomSound(const char* const sounds[], uint8_t count);
   uint8_t ledBrightness() const;
+  uint8_t audioVolume() const;
 
   AudioOutput* audio_ = nullptr;
   PixelStrip* strip_ = nullptr;
@@ -68,7 +64,8 @@ class SaberController {
   unsigned long hitTimer_ = 0;
   unsigned long gestureCounter_ = 0;
   uint8_t gestureCooldown_ = 0;
-  uint8_t strikeCount_ = 0;
+  // Samples still needed before the twist window holds real data at every slot.
+  uint8_t gestureWarmup_ = 0;
   uint16_t hitDuration_ = HardwareConfig::HitBaseMs;
   uint8_t animationPixel_ = 0;
   int pulseOffset_ = 0;
@@ -76,5 +73,6 @@ class SaberController {
   int8_t scannerDirection_ = 1;
   uint16_t scannerPixel_ = 0;
   float pitchSamples_[kImuSampleCount] = {0.0f};
+  // One byte of heat per pixel: the Fire effect's whole state.
   uint8_t fireHeat_[HardwareConfig::LedCount] = {0};
 };

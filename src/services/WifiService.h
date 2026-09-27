@@ -3,21 +3,19 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-// Serves the web console from the device's own access point.
+// Brings up the access point the console is reached through.
 //
-// The saber is AP-only by design: joining a home router created a lockout
-// risk (wrong password = no way back in without serial) for little gain, and
-// the fixed 192.168.4.1 address needs no discovery.  The hotspot itself is
-// open (no password) by user request; OTA keeps its own flash password.
+// There is no station mode on purpose.  Joining a home network used to be the
+// first thing the console asked for, which meant a mistyped password could lock
+// the device away until it was reflashed, and it left the console at an address
+// that changed with the DHCP lease.  On its own access point the address is
+// always the same, so the QR code on the screen always works.
 class WifiService {
  public:
   void begin();
 
-  // A phone or laptop is currently joined to the device hotspot.
-  bool stationJoined() const { return WiFi.softAPgetStationNum() > 0; }
-
   String localUrl() const;
-  String activeSsid() const;
+  String ssid() const;
 
  private:
   void startAccessPoint();

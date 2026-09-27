@@ -24,12 +24,11 @@ class SystemController {
  private:
   enum class ScreenMode : uint8_t { Eye, Qr };
 
+  void logBuildStamp();
   void logResetReason();
   void logDiagnosticsOnce();
   void handleBootButton();
   void setScreenMode(ScreenMode mode);
-  void reactToClash();
-  String qrHint() const;
 
   DisplayDriver display_;
   SdCardDriver sdCard_;
@@ -48,7 +47,6 @@ class SystemController {
   bool lastButtonState_ = true;
   bool buttonHandled_ = false;
   bool diagnosticsLogged_ = false;
-  uint8_t lastStrikeCount_ = 0;
   unsigned long lastButtonChange_ = 0;
   unsigned long lastQrRefresh_ = 0;
 };

@@ -25,12 +25,19 @@ constexpr uint8_t kEyePatternCount = 3;
 
 struct SaberSettings {
   bool power = false;
+  // #FF33CC, the pink-purple blade a fresh device starts with.  Only used as
+  // the default for a missing NVS key, so an existing device keeps whatever
+  // colour it was last set to.
   uint8_t red = 255;
-  uint8_t green = 0;
-  uint8_t blue = 0;
-  // User-facing brightness in percent (0-100); the driver scales it down to
-  // the brown-out-safe hardware ceiling internally.
-  uint8_t brightness = 100;
+  uint8_t green = 51;
+  uint8_t blue = 204;
+  // User-facing brightness in percent, 0-100.  The strip scale it maps onto is
+  // capped by MaxLedBrightness, and the current limiter in PixelStrip has the
+  // final say on what the 5 V rail is allowed to deliver.
+  uint8_t brightness = 80;
+  // Audio level, in percent of the codec ceiling.  The firmware default is the
+  // level at which the effect files still fit without clipping.
+  uint8_t volume = 80;
   SaberEffect effect = SaberEffect::Pulse;
   EyePattern eyePattern = EyePattern::Normal;
 };

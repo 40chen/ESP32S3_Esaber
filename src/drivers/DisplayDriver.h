@@ -6,29 +6,43 @@
 
 // Draws the animated eye and the WiFi QR code on the round GC9A01 panel.
 //
-// The eye is composed into a PSRAM sprite and pushed to the panel in a single
-// burst.  Redrawing the panel directly flickered badly, because a full 240x240
-// frame takes longer to clock out over SPI than the render interval and the
-// panel was therefore always caught mid update.  The sprite also lets the
-// driver skip the SPI burst entirely while the eye is not moving, which hands
-// the CPU back to the audio decoder.
+// The eye is a single RGB565 square of artwork (see tools/make_eye_texture.py)
+// blitted into a full panel sprite one row at a time.  Two properties of the
+// artwork make that cheap: it is composited onto black, so the transparent
+// corners need no masking, and the panel behind it is black as well, so a row
+// can be moved or squeezed without any per-pixel work.
+//
+// The sprite is pushed to the panel in one burst.  Redrawing the panel
+// directly flickered badly, because a full 240x240 frame takes longer to clock
+// out over SPI than the render interval and the panel was therefore always
+// caught mid update.  The sprite also lets the driver skip the SPI burst
+// entirely while the eye is not moving, which hands the CPU back to the audio
+// decoder.
 class DisplayDriver {
  public:
   void begin();
 
+  // Deliberately separate from begin(): the backlight inrush is kept away from
+  // the panel and card initialisation, and nobody wants to watch an
+  // uninitialised panel.
+  void enableBacklight();
+
   void showBoot(bool ready);
-  // hint is an optional ASCII-only credentials line drawn under the QR block.
-  void showQr(const char* url, const char* hint = nullptr);
+  void showQr(const char* title, const char* url);
+
+  // Re-runs the panel's reset and vendor sequence.  The GC9A01 has no reset
+  // line here (TFT_RST is -1), so once its serial interface is disturbed mid
+  // sequence nothing in software brings it back -- the corruption survives
+  // until the next power cycle.  Calling this once more after the current
+  // hungry parts of the boot have run repairs that case.  TFT_eSPI skips the
+  // bus setup on a second init() and only repeats the reset and the register
+  // table, so this is safe to call again.
+  void repairPanel();
 
   // lookX / lookY are normalised gaze targets in [-1, 1]; the driver smooths
   // them, adds idle movement and blinking, and pushes a frame only when the
-  // picture actually changed.  bladeRed/Green/Blue tint the iris so the eye
-  // follows the blade colour.
-  void drawEye(float lookX, float lookY, EyePattern pattern, uint8_t bladeRed,
-               uint8_t bladeGreen, uint8_t bladeBlue);
-
-  // One-shot flinch: openness dips and recovers over durationMs.
-  void squint(unsigned long durationMs);
+  // result actually changed.
+  void drawEye(float lookX, float lookY, EyePattern pattern);
 
  private:
   // Which screen currently owns the panel.  The eye only has to clear the
@@ -36,52 +50,25 @@ class DisplayDriver {
   // to draw that it is worth skipping while the address is unchanged.
   enum class Panel : uint8_t { Eye, Boot, Qr };
 
-  static constexpr int16_t kCanvasX = 24;
-  static constexpr int16_t kCanvasY = 28;
-  static constexpr int16_t kCanvasWidth = 192;
-  static constexpr int16_t kCanvasHeight = 176;
+  static constexpr int16_t kPanelSize = 240;
+  static constexpr int16_t kEyeCenterX = kPanelSize / 2;
+  static constexpr int16_t kEyeCenterY = kPanelSize / 2;
+  // How far the eyeball may slide from centre.  Horizontally this puts the rim
+  // exactly on the panel edge at full deflection, so a glance never leaves the
+  // screen; vertically it is kept smaller because the panel is round.
+  static constexpr int16_t kEyeTravelX = 20;
+  static constexpr int16_t kEyeTravelY = 14;
 
-  static constexpr int16_t kEyeCenterX = kCanvasWidth / 2;
-  static constexpr int16_t kEyeCenterY = 90;
-  // Roughly 1.8:1, the proportion that reads as an eye rather than a ball.
-  static constexpr int16_t kEyeHalfWidth = 88;
-  static constexpr int16_t kUpperLidOpen = 54;
-  static constexpr int16_t kLowerLidOpen = 42;
+  // A failed PSRAM allocation is retried this often rather than leaving the
+  // eye blank for the rest of the session.
+  static constexpr unsigned long kCanvasRetryMs = 1000;
 
-  static constexpr int16_t kIrisRadius = 32;
-  static constexpr int16_t kPupilRadius = 11;
-  static constexpr int16_t kGazeRangeX = 40;
-  static constexpr int16_t kGazeRangeY = 10;
-
-  static constexpr int16_t kLidStrokeUpper = 4;
-  static constexpr int16_t kLidStrokeLower = 2;
-
-  // Angry pinches the upper lid down towards the middle and lays a heavy brow
-  // just above it.  A brow that merely follows the lid's arc peaks in the
-  // middle and reads as a hat rather than a scowl.
-  static constexpr int16_t kAngryLidNotch = 15;
-  static constexpr int16_t kAngryBrowGap = 5;
-  static constexpr int16_t kAngryBrowLift = 18;
-  static constexpr int16_t kAngryBrowThickness = 11;
-  static constexpr float kAngryBrowSpan = 0.62f;
-
-  static constexpr float kAngryOpenness = 0.85f;
-  static constexpr float kSleepOpenness = 0.05f;
-
-  // Recomputes the lid curves for the current opening and expression.
-  void buildLidProfile(float openness, bool scowl);
-  void paintSclera();
-  void paintIris(int16_t centerX, int16_t centerY, uint16_t hue);
-  void maskOutsideEye();
-  void paintLidStrokes();
-  void paintBrow();
-  void paintClosedLid();
+  bool ensureCanvas(unsigned long now);
+  void paintEye(int16_t offsetX, int16_t offsetY, float openness);
+  void paintBrows(int16_t offsetX, int16_t offsetY, float openness);
 
   void updateGaze(unsigned long now, float targetX, float targetY, bool attentive);
   void updateBlink(unsigned long now);
-
-  // Envelope for the clash flinch; 1.0 when no squint is active.
-  float squintEnvelope(unsigned long now) const;
 
   // Returns true when the frame differs enough from the last pushed frame to
   // be worth drawing and clocking out.
@@ -93,13 +80,10 @@ class DisplayDriver {
   TFT_eSPI tft_;
   TFT_eSprite canvas_{&tft_};
   bool canvasReady_ = false;
+  unsigned long canvasRetry_ = 0;
 
   Panel panel_ = Panel::Boot;
-  String qrUrl_;   // last address rendered, so an unchanged QR is not redrawn
-  String qrHint_;  // last hint line rendered, same purpose
-
-  int16_t upperLid_[kCanvasWidth] = {0};
-  int16_t lowerLid_[kCanvasWidth] = {0};
+  String qrUrl_;  // last address rendered, so an unchanged QR is not redrawn
 
   float gazeX_ = 0.0f;
   float gazeY_ = 0.0f;
@@ -115,8 +99,6 @@ class DisplayDriver {
   unsigned long blinkTimer_ = 0;
   unsigned long idleTimer_ = 0;
   unsigned long idleDue_ = 0;
-  unsigned long squintStart_ = 0;
-  unsigned long squintUntil_ = 0;
 
   float pushedGazeX_ = 2.0f;
   float pushedGazeY_ = 2.0f;
