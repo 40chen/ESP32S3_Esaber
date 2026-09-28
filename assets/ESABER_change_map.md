@@ -1,11 +1,10 @@
 # ESP32S3_Esaber · 固件改动点地图（速查表）
 
 > 产出：通用助手 ｜ 2026-09-28 ｜ 供真机验收与回滚速查
-> 对应提交：**0a8dce3**（main，本地领先 origin 1 提交，待推送）· 基线 e23cb1d
+> 对应提交：**0a8dce3**（3.3V 优化主体）→ **ca819d5**（全源码中文注释合入）→ **107e235**（blender 脚本入 assets）
+> ⚠️ **本表全部行号已按 ca819d5 实测重标（= 用户手上 zip 的仓库态）**。查原始功能 diff 用 `git show 0a8dce3 -- <文件>`；在当前代码里定位直接用本表行号。
 > 范围：14 文件，+337 / −34 · 六块主题 = 验收口径【改动①~④】+【音效集】+【修复】
-> 行内逐行注释：设计匠人单一写入中（本文与其互补：一个管速查/回滚，一个管逐行理解）
-> ⚠️ 行号以 0a8dce3 原始终态为准；行内注释合入后行号会漂移，请以「符号/函数名」为锚。
-> 精确 diff 随时可查：`git show 0a8dce3 -- <文件>`
+> 与行内注释互补：注释管逐行理解，本表管速查/回滚。行号若再因后续提交漂移，请以「符号/函数名」为锚。
 
 ## 总览
 
@@ -22,12 +21,12 @@
 
 ## 【改动①】背光 PWM 调光
 
-| 位置（0a8dce3） | 内容 |
+| 位置（ca819d5） | 内容 |
 |---|---|
-| `include/HardwareConfig.h:82-88` | 新增 `DisplayBacklightPwmFrequency=10000`（10kHz）、`DisplayBacklightPwmRes=10`（10bit，0..1023）、`DefaultBacklightPct=66` 三常量 |
-| `src/drivers/DisplayDriver.cpp:32-38` | `kBacklightPwmChannel=0`（TFT_eSPI 不占 LEDC 通道，通道 0 安全） |
-| `src/drivers/DisplayDriver.cpp:68-74` | `begin()` 中引脚移交 LEDC：`ledcSetup → ledcAttachPin → ledcWrite(0)`，0 占空起步电平不变 |
-| `src/drivers/DisplayDriver.cpp:83-88` | `enableBacklight()`：`digitalWrite(HIGH)` → `ledcWrite(66% × maxDuty)`，**全工程唯一占空入口** |
+| `include/HardwareConfig.h:95-97` | 新增 `DisplayBacklightPwmFrequency=10000`（10kHz）、`DisplayBacklightPwmRes=10`（10bit，0..1023）、`DefaultBacklightPct=66` 三常量 |
+| `src/drivers/DisplayDriver.cpp:37` | `kBacklightPwmChannel=0`（TFT_eSPI 不占 LEDC 通道，通道 0 安全） |
+| `src/drivers/DisplayDriver.cpp:74-77` | `begin()` 中引脚移交 LEDC：`ledcSetup → ledcAttachPin → ledcWrite(0)`，0 占空起步电平不变 |
+| `src/drivers/DisplayDriver.cpp:89-92` | `enableBacklight()`：`digitalWrite(HIGH)` → `ledcWrite(66% × maxDuty)`（91 起），**全工程唯一占空入口** |
 
 - **为什么**：背光是 3.3V（AMS1117 供电）最大稳态负载；10kHz 高于人耳频段（不啸叫进功放）且避开相机条纹频段；66% 室内视觉近无感。
 - **真机验收**：QR 码屏幕在 66% 亮度下仍可扫；无高频电流音。
@@ -35,10 +34,10 @@
 
 ## 【改动②】CPU 160MHz + PSRAM 显式声明
 
-| 位置（0a8dce3） | 内容 |
+| 位置（ca819d5） | 内容 |
 |---|---|
-| `platformio.ini:14-19` | `board_build.f_cpu = 160000000L`（原默认 240MHz） |
-| `platformio.ini:21-31` | `build_flags` 新增 `-D BOARD_HAS_PSRAM`（8MB octal PSRAM 显式启用）；同块缩进 tab→空格统一（无语义变化） |
+| `platformio.ini:23` | `board_build.f_cpu = 160000000L`（原默认 240MHz） |
+| `platformio.ini:33` | `build_flags` 内 `-D BOARD_HAS_PSRAM`（8MB octal PSRAM 显式启用）；同块缩进 tab→空格统一（无语义变化） |
 
 - **为什么**：眼睛渲染/音频解码/网页控制台 160MHz 余量充足，动态电流与 AMS1117 压差发热双降；PSRAM 本来就在用，加 flag 是显式化——音频 64KB 缓冲与眼睛贴图依赖它，缺了会落回内部堆。
 - **真机验收**：眼睛动画帧率可接受、控制台无卡顿、长时运行温升降低。
@@ -46,10 +45,10 @@
 
 ## 【改动③】AP beacon 间隔 300ms
 
-| 位置（0a8dce3） | 内容 |
+| 位置（ca819d5） | 内容 |
 |---|---|
-| `src/services/WifiService.cpp:4` | `#include <esp_wifi.h>` |
-| `src/services/WifiService.cpp:30` | `startAccessPoint()` 内 `softAP` 之后调用 `esp_wifi_config_beacon_interval(WIFI_IF_AP, 300)` |
+| `src/services/WifiService.cpp:3` | `#include <esp_wifi.h>` |
+| `src/services/WifiService.cpp:32` | `startAccessPoint()` 内 `softAP` 之后调用 `esp_wifi_config_beacon_interval(WIFI_IF_AP, 300)`（30-31 为其注释块） |
 
 - **为什么**：beacon 默认 100ms 一发，300ms 让 radio 周期发包降为 1/3；手机停在控制台页无感（IDF 合法区间 100-60000ms）。必须在 `softAP` 之后调用才生效。
 - **真机验收**：待机功耗下降；控制台页面连接、加载正常。
@@ -57,11 +56,11 @@
 
 ## 【改动④】开刃串行化（峰值电流错峰）
 
-| 位置（0a8dce3） | 内容 |
+| 位置（ca819d5） | 内容 |
 |---|---|
-| `src/app/SaberController.h:66-68` | +成员 `ignitionLightDue_`（灯条首帧到点时刻）；同文件删除 `humTimer_`（归⑤/⑥） |
-| `src/app/SaberController.cpp:161` | `setPower(true)`：`ignitionLightDue_ = millis() + PaSettleMs(20ms)` —— PA 先使能并独占 20ms 稳定窗 |
-| `src/app/SaberController.cpp:295-297` | `updateLighting()` 执行端：`now < ignitionLightDue_` 直接 return，灯条首帧等 PA 稳定窗过去才铺开 |
+| `src/app/SaberController.h:76` | +成员 `ignitionLightDue_`（灯条首帧到点时刻）；`humTimer_` 已删除（归⑤/⑥） |
+| `src/app/SaberController.cpp:161` | `setPower(true)`：`ignitionLightDue_ = millis() + PaSettleMs(20ms)`（常量在 HardwareConfig.h:84）—— PA 先使能并独占 20ms 稳定窗 |
+| `src/app/SaberController.cpp:297` | `updateLighting()` 执行端：单行门控 `if (now < ignitionLightDue_) return;`，灯条首帧等 PA 稳定窗过去才铺开 |
 | `src/app/SaberController.cpp:162` | `effectTimer_ = millis()` 同步重置（动画时基） |
 
 - **为什么**：PA 浪涌与 LED 全亮电流不同 tick 共用 3.3V，消除开刃瞬间压降棕死；20ms 视觉不可见。
@@ -72,47 +71,49 @@
 
 数据流：网页卡片 → `/api/settings` → `SettingsStore`(NVS) → `SaberSettings` → 播放。
 
-| 位置（0a8dce3） | 内容 |
+| 位置（ca819d5） | 内容 |
 |---|---|
-| `include/AppTypes.h:26-31` | `kSoundNameLength=48`；定长 `char` 数组而非 String（避免 loop 任务堆碎片） |
-| `include/AppTypes.h:49-53` | `SaberSettings` +`bootSound="endlock1.wav"` / `shutdownSound="endlock2.wav"` / `humSound="111.wav"` |
-| `src/services/SettingsStore.h:18-19` | 私有助手 `readSound()` 声明（String→定长缓冲 strlcpy） |
-| `src/services/SettingsStore.cpp:36-38` | `begin()` 读 NVS 三键：`boot_snd` / `off_snd` / `hum_snd` |
-| `src/services/SettingsStore.cpp:48-51` | `readSound()` 实现 |
-| `src/services/SettingsStore.cpp:70-72` | `saveSaber()` 写 NVS 三键（写频=网页保存频率，无 NVS 磨损顾虑） |
-| `src/web/WebService.h:18` | +`handleSounds()` 声明 |
-| `src/web/WebService.cpp:892` | `begin()` 注册路由 `GET /api/sounds` |
-| `src/web/WebService.cpp:946` | `handleSounds()` 实现：SD 卡**根目录**扫描 .wav → JSON 列表 |
-| `src/web/WebService.cpp:920-924` | `handleStatus()` 附带当前三个音效名（页面回显） |
-| `src/web/WebService.cpp:1-52,186-193` | INDEX_HTML：音效卡片样式（⚠️ 原始字符串区，只改样式与 DOM，无 C++ 注释） |
-| `src/web/WebService.cpp:396-413` | 音效卡片 HTML：开机/关机/底噪三个下拉，位于特效卡片下方 |
-| `src/web/WebService.cpp:468,518-523,534-603` | 前端 JS：`/api/sounds` 拉列表、demo 兼容、保存 + toast「音效已保存」、失败回滚、SD 空时禁用下拉并提示 |
-| `src/web/WebService.cpp:699-706,839-842` | `applyStatus()` 回填三个下拉值 + change 监听提交 |
-| `src/app/SaberController.cpp:15-17` | −硬编码 `kPowerOnSound/kPowerOffSound`（改由设置驱动） |
+| `include/AppTypes.h:33` | `kSoundNameLength=48`；定长 `char` 数组而非 String（避免 loop 任务堆碎片） |
+| `include/AppTypes.h:51-53` | `SaberSettings` +`bootSound="endlock1.wav"` / `shutdownSound="endlock2.wav"` / `humSound="111.wav"` |
+| `src/services/SettingsStore.h:25` | 私有助手 `readSound()` 声明（String→定长缓冲 strlcpy） |
+| `src/services/SettingsStore.cpp:39-41` | `begin()` 读 NVS 三键：`boot_snd` / `off_snd` / `hum_snd` |
+| `src/services/SettingsStore.cpp:51` | `readSound()` 实现 |
+| `src/services/SettingsStore.cpp:72-74` | `saveSaber()` 写 NVS 三键（写频=网页保存频率，无 NVS 磨损顾虑） |
+| `src/web/WebService.h:19` | +`handleSounds()` 声明 |
+| `src/web/WebService.cpp:900` | `begin()` 注册路由 `GET /api/sounds` |
+| `src/web/WebService.cpp:954` | `handleSounds()` 实现：SD 卡**根目录**扫描 .wav → JSON 列表 |
+| `src/web/WebService.cpp:933-935` | `handleStatus()` 附带当前三个音效名（页面回显） |
+| `src/web/WebService.cpp:75,191` | INDEX_HTML：样式区起点 75，音效下拉样式在 191（⚠️ 原始字符串区，只改样式与 DOM，无 C++ 注释） |
+| `src/web/WebService.cpp:402-414` | 音效卡片 HTML：开机/关机/底噪三个下拉（402 卡片标题，405-414 三组 label+select），位于特效卡片下方 |
+| `src/web/WebService.cpp:473,523-528` | 前端 JS：demo 兼容默认值 473；demo 分支 `/api/sounds` 路由 523、body 应用 526-528 |
+| `src/web/WebService.cpp:549-607` | 音效 JS 主块（549 分区注释起）：559 `fetch('/api/sounds')` 拉列表、即选即存 + toast「音效已保存」在 **607**、失败回滚、SD 空时禁用下拉并提示 |
+| `src/web/WebService.cpp:689-709` | `applyStatus()`：689 函数起，音效回填 704-709（soundDirty 比较+赋值） |
+| `src/web/WebService.cpp:844-846` | 三个下拉 `change` 监听提交（`pushSound`） |
+| `src/app/SaberController.cpp` | −硬编码 `kPowerOnSound/kPowerOffSound`（改由设置驱动） |
 | `src/app/SaberController.cpp:118` | `setSettings()` +`humChanged` 检测（strcmp） |
 | `src/app/SaberController.cpp:135-136` | 底噪即选即换：播放中热切换 `audio_->play(settings_.humSound)`，即刻可闻 |
 | `src/app/SaberController.cpp:152` | 开机音：`play(settings_.bootSound)`（原 `endlock1.wav` 硬编码） |
 | `src/app/SaberController.cpp:166` | 关机音：`play(settings_.shutdownSound)` |
-| `src/app/SaberController.cpp:276-281` | `updateHum()` 重写：删 humTimer_ 定时器机制 → `audio_->isRunning()` **下降沿重挂**（任何时长的文件都通用，不内建定时） |
-| `src/drivers/AudioOutput.h:36-40` / `.cpp:100-102` | +`isRunning() const`（供上述下降沿判断） |
+| `src/app/SaberController.cpp:276-285` | `updateHum()` 重写：删 humTimer_ 定时器机制 → `audio_->isRunning()` **下降沿重挂**（279 判断、280 重挂；任何时长的文件都通用，不内建定时） |
+| `src/drivers/AudioOutput.h:34` / `.cpp:101-102` | +`isRunning() const`（供上述下降沿判断） |
 
 - **语义变化**：底噪不再"到点强制抢占"，而是等当前音（开刃音/挥砍/碰撞）自然播完后续上——听感更顺，任意时长 wav 通用。
 - **回滚**：整块 revert；或最小回滚 = 恢复 3 个 Hum 常量 + humTimer_ 旧机制 + 两处硬编码音名。
 
 ## 【修复】编译修复与死代码清理
 
-| 位置（0a8dce3） | 内容 |
+| 位置 | 内容 |
 |---|---|
-| `src/app/SaberController.cpp:148` | −`setPower()` 内重复的 `const unsigned long now` 声明（重复声明是编译错误源） |
-| `src/app/SaberController.cpp:175` | `effectTimer_ = millis()` 直接调用（原 `now` 引用已随上条删除） |
-| `include/HardwareConfig.h:114-120` | −`HumTimeout / HumActivationDelay / HumSoundDelay` 三常量（旧 hum 定时机制的死配置，被⑤的下降沿机制取代） |
+| `src/app/SaberController.cpp` `setPower()` 内 | −重复的 `const unsigned long now` 声明（重复声明是编译错源；ca819d5 中 setPower 的 `now` 仅剩 103 一处） |
+| `src/app/SaberController.cpp:179` | `effectTimer_ = millis()` 直接调用（原 `now` 引用已随上条删除） |
+| `include/HardwareConfig.h` | −`HumTimeout / HumActivationDelay / HumSoundDelay` 三常量（旧 hum 定时机制的死配置，被⑤的下降沿机制取代；ca819d5 中已验证不存在） |
 
 ---
 
 ## 回滚三档
 
-1. **单块回滚**：按上表定位，`git show 0a8dce3 -- <文件>` 对照手工还原；行内注释合入后行号漂移，**以函数名/常量名为锚**。
-2. **整提交回滚**：`git revert 0a8dce3`——若届时行内注释已 commit，revert 会与纯注释行冲突，按"保留注释、还原代码"手工解冲突。
+1. **单块回滚**：按上表定位，`git show 0a8dce3 -- <文件>` 对照原始功能 diff 手工还原；本表行号是 ca819d5 态，若后续提交再漂移，**以函数名/常量名为锚**。
+2. **整提交回滚**：`git revert 0a8dce3`——行内注释已随 ca819d5 合入，revert 会与纯注释行冲突，按"保留注释、还原代码"手工解冲突。
 3. **全退**：`git reset --hard e23cb1d`（连音效三下拉一起丢弃，慎用）。
 
 ## 真机验收清单（对照四项方向）
