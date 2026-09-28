@@ -1,10 +1,52 @@
 #include "WebService.h"
 
 #include <ArduinoJson.h>
+#include <SD_MMC.h>
 
 namespace {
 
-constexpr size_t kStatusBufferSize = 512;
+// 512 bytes was the headroom for the old payload; the three selectable sound
+// names add up to ~150 bytes worst case (48-char names).
+constexpr size_t kStatusBufferSize = 640;
+// The console dropdown never needs the whole card: 64 entries is already a
+// very full sound pack, and it bounds the directory walk on the loop task.
+constexpr size_t kMaxSoundEntries = 64;
+
+// A sound slot only ever plays one file from the SD card root, so the name
+// must survive being joined with "/" without escaping anywhere: flat name,
+// sane characters, no dot tricks.  Extension is not restricted here -- the
+// decoder's supported formats are a firmware property, and an unsupported
+// file simply plays nothing.
+bool validSoundName(const String& name) {
+  if (name.isEmpty() || name.length() >= kSoundNameLength) return false;
+  if (name[0] == '.') return false;                      // hidden files, ".."
+  if (name.indexOf("..") >= 0) return false;
+  if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;
+  for (unsigned int i = 0; i < name.length(); ++i) {
+    const char c = name[i];
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+// Only names that actually sit on the card may be persisted; otherwise a
+// typo in a hand-crafted request would silently disable a sound slot.  The
+// extension check keeps both the dropdown and the slots inside the decoder's
+// supported formats (case-insensitive, per the /api/sounds contract).
+bool hasAudioExtension(const String& name) {
+  const int dot = name.lastIndexOf('.');
+  if (dot < 0) return false;
+  String ext = name.substring(dot);
+  ext.toLowerCase();
+  return ext == ".wav" || ext == ".flac" || ext == ".mp3";
+}
+
+bool soundOnCard(const String& name) {
+  if (!validSoundName(name) || !hasAudioExtension(name)) return false;
+  return SD_MMC.exists("/" + name);
+}
 constexpr size_t kJsonCapacity = 512;
 
 String effectName(uint8_t effect) {
@@ -144,6 +186,14 @@ h2{font-size:17px;font-weight:600;margin:0 0 2px}
 }
 .input::placeholder{color:#6c6c72}
 .input:focus{outline:none;border-color:var(--accent)}
+/* 音效下拉：沿用输入框底色，右侧画一枚与文字同灰度的折叠箭头 */
+.select{
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239d9da5' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 14px center;
+  padding-right:40px;color:var(--text);color-scheme:dark;
+}
+.select:disabled{opacity:.45}
 .btn{
   width:100%;height:50px;border:none;border-radius:var(--radius-s);background:var(--accent);
   color:#fff;font-size:17px;font-weight:600;cursor:pointer;margin-top:16px;transition:opacity .15s;
@@ -346,6 +396,24 @@ input[type=range]::-moz-range-thumb{width:26px;height:26px;border:none;border-ra
       <div class="tiles c3" id="eyes" role="group" aria-label="眼睛表情选择"></div>
     </div>
 
+    <div class="card" data-card="sounds">
+      <h2>音效</h2>
+      <p class="hint">从 SD 卡根目录选择音频文件（.wav / .flac / .mp3），即选即存、断电不丢；底噪换曲立即生效</p>
+      <div class="field">
+        <label for="bootSound">开机音效（开刃）</label>
+        <select class="input select" id="bootSound" aria-label="开机音效选择"></select>
+      </div>
+      <div class="field">
+        <label for="shutdownSound">关机音效（收刃）</label>
+        <select class="input select" id="shutdownSound" aria-label="关机音效选择"></select>
+      </div>
+      <div class="field">
+        <label for="humSound">底噪音（亮刀期间循环）</label>
+        <select class="input select" id="humSound" aria-label="底噪音选择"></select>
+      </div>
+      <p class="msg" id="soundsMsg" aria-live="polite"></p>
+    </div>
+
     <div class="card" data-card="blender">
       <h2>Blender 动捕</h2>
       <p class="hint">姿态数据经 UDP 推送到电脑上的 Blender 模型（默认端口 5005）</p>
@@ -400,6 +468,7 @@ var EFFECT_NAMES = ['常亮','呼吸','彩虹','扫描','不稳定','火焰','�
 
 /* ---------------- 状态 ---------------- */
 var S = {power:false, color:'#0A84FF', brightness:80, volume:14, volumeMax:21, effect:1, eye:0,
+         bootSound:'endlock1.wav', shutdownSound:'endlock2.wav', humSound:'111.wav', sounds:[],
          blenderIp:'', ssid:'', url:'', connected:false};
 var localUntil = 0;        // 用户操作后的静默期：轮询不回写控件，避免打架
 var demo = false;          // 演示模式（无设备时的可交互预览，显式进入）
@@ -449,7 +518,12 @@ function demoApi(path, body){
         if ('eye' in body) S.eye = +body.eye;
       } else if (path === '/api/blender'){
         S.blenderIp = body.ip;
+      } else if (path === '/api/sounds'){
+        // demo-only branch: the real console reads this with a plain GET.
       }
+      if ('boot_sound' in body) S.bootSound = body.boot_sound;
+      if ('shutdown_sound' in body) S.shutdownSound = body.shutdown_sound;
+      if ('hum_sound' in body) S.humSound = body.hum_sound;
       resolve({ok:true});
     }, 90);
   });
@@ -460,12 +534,76 @@ function enableDemo(){
                     ssid:'Esaber-Setup', url:'http://192.168.4.1', blenderIp:'192.168.1.50', connected:true});
   $('demoPill').classList.remove('hidden');
   render();
+  loadSounds();
 }
 
 /* ---------------- 渲染 ---------------- */
 function setView(view){
   $('view-connect').classList.toggle('hidden', view !== 'connect');
   $('view-console').classList.toggle('hidden', view !== 'console');
+  if (view === 'console' && !soundLoaded) loadSounds();
+}
+
+/* ---------------- 音效 ---------------- */
+var soundLoaded = false;   // 每次进入控制台只拉一次 SD 清单，刷新页面重读
+var DEMO_SOUNDS = ['111.wav','endlock1.wav','endlock2.wav','clsh1.wav','clsh2.wav','swng1.wav'];
+function loadSounds(){
+  if (demo){
+    S.sounds = DEMO_SOUNDS.slice();
+    soundLoaded = true;
+    renderSoundSelects();
+    return;
+  }
+  fetch('/api/sounds').then(function(r){ return r.json(); }).then(function(j){
+    S.sounds = (j && j.sounds) || [];
+    soundLoaded = true;
+    renderSoundSelects();
+  }).catch(function(){
+    S.sounds = [];
+    renderSoundSelects();
+  });
+}
+function fillSoundSelect(id, current){
+  var sel = $(id);
+  sel.innerHTML = '';
+  var names = S.sounds;
+  // SD 卡被更换后当前值可能不在清单里：保留原值选项，避免静默换音
+  if (current && names.indexOf(current) < 0){
+    var keep = document.createElement('option');
+    keep.value = current;
+    keep.textContent = current + '（SD 缺失）';
+    sel.appendChild(keep);
+  }
+  for (var i = 0; i < names.length; i++){
+    var o = document.createElement('option');
+    o.value = names[i];
+    o.textContent = names[i];
+    sel.appendChild(o);
+  }
+  if (current) sel.value = current;
+  sel.disabled = names.length === 0;
+}
+function renderSoundSelects(){
+  if (!S.sounds.length){
+    $('soundsMsg').textContent = '未在 SD 卡根目录发现音频文件（.wav / .flac / .mp3）';
+    $('soundsMsg').className = 'msg err';
+  } else {
+    $('soundsMsg').textContent = '';
+    $('soundsMsg').className = 'msg';
+  }
+  fillSoundSelect('bootSound', S.bootSound);
+  fillSoundSelect('shutdownSound', S.shutdownSound);
+  fillSoundSelect('humSound', S.humSound);
+}
+// 音效是离散单选，不走滑条的 80ms 合并节流，一次选择一发落地
+function pushSound(key, value){
+  var part = {};
+  part[key] = value;
+  S[key] = value;
+  localUntil = Date.now() + 1500;
+  api('/api/settings', part).then(function(){
+    toast('音效已保存' + (key === 'humSound' ? '，循环已切换' : ''), 'ok');
+  }).catch(function(){ toast('保存失败，请重试', 'err'); });
 }
 function render(){
   var online = S.connected;
@@ -561,6 +699,14 @@ function applyStatus(s){
     if (s.volumeMax) S.volumeMax = +s.volumeMax;
     S.effect = clamp(+s.effect || 0, 0, 6);
     S.eye = clamp(+s.eye || 0, 0, 2);
+    var soundDirty = (s.bootSound && s.bootSound !== S.bootSound) ||
+                     (s.shutdownSound && s.shutdownSound !== S.shutdownSound) ||
+                     (s.humSound && s.humSound !== S.humSound);
+    if (s.bootSound) S.bootSound = s.bootSound;
+    if (s.shutdownSound) S.shutdownSound = s.shutdownSound;
+    if (s.humSound) S.humSound = s.humSound;
+    // 下拉只在新值与当前显示不一致时重建，避免轮询期间丢失选中焦点
+    if (soundDirty && soundLoaded) renderSoundSelects();
   }
   render();
 }
@@ -693,6 +839,10 @@ $('volume').addEventListener('change', function(){
 });
 $('volume').addEventListener('pointerup', pushSettingsFinal);
 
+$('bootSound').addEventListener('change', function(){ pushSound('bootSound', this.value); });
+$('shutdownSound').addEventListener('change', function(){ pushSound('shutdownSound', this.value); });
+$('humSound').addEventListener('change', function(){ pushSound('humSound', this.value); });
+
 $('blenderForm').addEventListener('submit', function(e){
   e.preventDefault();
   var ip = $('blenderIp').value.trim();
@@ -739,6 +889,7 @@ void WebService::begin(WebServer* server, SaberController* saber, WifiService* w
 
   server_->on("/", HTTP_GET, [this]() { handleRoot(); });
   server_->on("/api/status", HTTP_GET, [this]() { handleStatus(); });
+  server_->on("/api/sounds", HTTP_GET, [this]() { handleSounds(); });
   server_->on("/api/settings", HTTP_POST, [this]() { handleSettings(); });
   server_->on("/api/power", HTTP_POST, [this]() { handlePower(); });
   server_->on("/api/blender", HTTP_POST, [this]() { handleBlender(); });
@@ -769,6 +920,11 @@ void WebService::handleStatus() {
   // firmware will go" -- see MaxCodecVolume for what that costs.
   json["volumeMax"] = 100;
   json["blenderIp"] = settings_->blenderIp();
+  // Selectable sound slots, echoed so the console dropdowns can restore the
+  // current pick even when the SD listing changes underneath them.
+  json["bootSound"] = saber.bootSound;
+  json["shutdownSound"] = saber.shutdownSound;
+  json["humSound"] = saber.humSound;
   // Build stamp, so the console can be told apart from a cached copy of an
   // older one and a flashed build from one that never made it onto the board.
   json["firmware"] = __DATE__ " " __TIME__;
@@ -784,8 +940,51 @@ void WebService::handleStatus() {
   server_->send(200, "application/json", String(output, length));
 }
 
+// Lists the playable audio files on the SD card root for the console
+// dropdowns.  The walk is bounded by kMaxSoundEntries so a pathological card
+// can never stall the loop task that also runs the audio decoder.
+void WebService::handleSounds() {
+  JsonDocument json;
+  JsonArray sounds = json["sounds"].to<JsonArray>();
+  if (SD_MMC.cardType() != CARD_NONE) {
+    File root = SD_MMC.open("/");
+    if (root && root.isDirectory()) {
+      File entry = root.openNextFile();
+      while (entry && sounds.size() < kMaxSoundEntries) {
+        String name = entry.name();
+        const int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        if (validSoundName(name) && hasAudioExtension(name)) sounds.add(name);
+        entry.close();
+        entry = root.openNextFile();
+      }
+      root.close();
+    }
+  }
+  json["ok"] = sounds.size() > 0;
+  String output;
+  serializeJson(json, output);
+  sendJson(200, output);
+}
+
 void WebService::handleSettings() {
   SaberSettings settings = saber_->settings();
+  // Sound slots are optional parameters: a request that only carries one
+  // leaves the other slots untouched.  Unknown or absent files are rejected
+  // outright so a slot can never be pointed at something unplayable.
+  const auto applySound = [this, &settings](const char* arg, char* slot) -> bool {
+    if (!server_->hasArg(arg)) return true;
+    const String name = server_->arg(arg);
+    if (!soundOnCard(name)) return false;
+    strlcpy(slot, name.c_str(), kSoundNameLength);
+    return true;
+  };
+  if (!applySound("boot_sound", settings.bootSound) ||
+      !applySound("shutdown_sound", settings.shutdownSound) ||
+      !applySound("hum_sound", settings.humSound)) {
+    sendJson(400, "{\"ok\":false,\"error\":\"unknown sound\"}");
+    return;
+  }
   if (server_->hasArg("r")) settings.red = server_->arg("r").toInt();
   if (server_->hasArg("g")) settings.green = server_->arg("g").toInt();
   if (server_->hasArg("b")) settings.blue = server_->arg("b").toInt();

@@ -32,6 +32,11 @@ class AudioOutput {
   void loop();
   void play(const char* file);
 
+  // True while any stream (effect or hum) is on the air.  The saber uses the
+  // falling edge to re-arm the hum loop, which is what makes the hum work
+  // with any file duration instead of a baked-in one.
+  bool isRunning() const;
+
   // Audio level in percent, 0..100, where 100 is the loudest the firmware
   // allows.  Applied to the codec, so it takes effect immediately.
   void setVolume(uint8_t percent);

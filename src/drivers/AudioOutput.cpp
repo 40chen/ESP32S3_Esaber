@@ -97,6 +97,10 @@ void AudioOutput::loop() {
   updateAmplifier();
 }
 
+bool AudioOutput::isRunning() const {
+  return ready_ && audio_ != nullptr && audio_->isRunning();
+}
+
 void AudioOutput::play(const char* file) {
   if (!ready_) return;
 

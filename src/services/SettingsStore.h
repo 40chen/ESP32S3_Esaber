@@ -15,6 +15,8 @@ class SettingsStore {
 
  private:
   String readString(const char* key, const char* fallback);
+  // Sound names arrive as Strings from Preferences and land in fixed buffers.
+  void readSound(const char* key, char* out, const char* fallback);
 
   SaberSettings saber_;
   String blenderIp_;

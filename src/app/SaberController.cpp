@@ -15,9 +15,6 @@ constexpr uint16_t kPulseRandomMax = kPulseRandomRange - 1;
 constexpr uint8_t kChannelMaximum = 255;
 constexpr uint16_t kHueFullCircle = 65535;
 
-constexpr const char* kPowerOnSound = "endlock1.wav";
-constexpr const char* kPowerOffSound = "endlock2.wav";
-
 const char* const kStrikeSounds[kStrikeSoundCount] = {
     "clsh1.wav", "clsh2.wav", "clsh3.wav", "clsh4.wav", "clsh5.wav",
     "clsh6.wav", "clsh7.wav", "clsh8.wav", "clsh9.wav", "clsh10.wav"};
@@ -115,6 +112,7 @@ void SaberController::setSettings(const SaberSettings& settings) {
   const bool volumeChanged = settings.volume != settings_.volume;
   const bool colorChanged = settings.red != settings_.red || settings.green != settings_.green ||
                             settings.blue != settings_.blue;
+  const bool humChanged = strcmp(settings.humSound, settings_.humSound) != 0;
   settings_ = settings;
 
   if (brightnessChanged) {
@@ -129,6 +127,12 @@ void SaberController::setSettings(const SaberSettings& settings) {
     setPower(settings.power);
     return;
   }
+  // A newly picked hum takes effect mid-blade: play it on the spot, which
+  // also drops the old stream, so the change is heard at once.  Ignition and
+  // retraction sounds simply apply the next time they fire.
+  if (humChanged && humPlaying_ && settings_.power) {
+    audio_->play(settings_.humSound);
+  }
   if (!settings_.power) {
     strip_->clear();
   } else if (colorChanged) {
@@ -141,20 +145,22 @@ void SaberController::setPower(bool enabled) {
   if (enabled == settings_.power) return;
 
   settings_.power = enabled;
-  const unsigned long now = millis();
   if (enabled) {
-    audio_->play(kPowerOnSound);
+    audio_->play(settings_.bootSound);
     audio_->setAmplifierEnabled(true);
-    humTimer_ = now - HardwareConfig::HumTimeout + HardwareConfig::HumActivationDelay;
     turnOnAnimation_ = true;
     animationPixel_ = 0;
     retracting_ = false;
     humPlaying_ = true;
+    // Serialize the current steps: the amplifier's settle window runs first,
+    // and the blade ramp only starts once it has passed (invisible 20 ms).
+    ignitionLightDue_ = millis() + HardwareConfig::PaSettleMs;
+    effectTimer_ = millis();
     // Deliberately no strip fill here.  Lighting every pixel at once both
     // defeated the ignition animation and spiked the supply hard enough to
     // brown out the MCU; updateLighting now ramps the blade up.
   } else {
-    audio_->play(kPowerOffSound);
+    audio_->play(settings_.shutdownSound);
     // After the play() call, never before: play() claims the amplifier so the
     // retraction sound is heard, and releasing it afterwards lets the driver
     // keep the amplifier up until that sound has finished.
@@ -169,7 +175,7 @@ void SaberController::setPower(bool enabled) {
     // matches the power-off sound far better than a hard clear().
     retracting_ = true;
     animationPixel_ = HardwareConfig::LedCount / 2 - 1;
-    effectTimer_ = now;
+    effectTimer_ = millis();
   }
 }
 
@@ -222,7 +228,7 @@ void SaberController::handleStrike(unsigned long now) {
 
   strikeTimeout_ = now;
   playRandomSound(kStrikeSounds, kStrikeSoundCount);
-  humTimer_ = now - HardwareConfig::HumTimeout + HardwareConfig::HumSoundDelay;
+  // The hum re-arms itself once the clash has finished playing.
   // Normalise how hard the hit was to 0-100 so the flash length scales with
   // impact strength instead of always flashing for the same time.
   const uint8_t intensity = static_cast<uint8_t>(
@@ -250,15 +256,18 @@ void SaberController::handleSwing(unsigned long now) {
     playRandomSound(kSwingSounds, kSwingSoundFastCount);
   }
 
-  humTimer_ = now - HardwareConfig::HumTimeout + HardwareConfig::HumSoundDelay;
   swingReady_ = false;
   swingTimer_ = now;
 }
 
 void SaberController::updateHum(unsigned long now) {    // The hum is a continuous sound that plays while the blade is on.  It is
-  if (!humPlaying_ || now - humTimer_ <= HardwareConfig::HumTimeout) return;
-  audio_->play("111.wav");
-  humTimer_ = now;
+  (void)now;
+  if (!humPlaying_) return;
+  // Re-arm on the falling edge of playback: whatever is on the air (the
+  // ignition sound, a swing, a clash) finishes before the hum comes back, and
+  // the loop works with any file duration -- no baked-in timer.
+  if (audio_->isRunning()) return;
+  audio_->play(settings_.humSound);
   swingReady_ = true;
   strikePlaying_ = false;
 }
@@ -271,6 +280,9 @@ void SaberController::updateLighting(unsigned long now) {
   }
 
   if (turnOnAnimation_) {
+    // Hold the ramp until the amplifier settle window has passed (see
+    // setPower): PA inrush and the first lit pixels never share a tick.
+    if (now < ignitionLightDue_) return;
     if (now - effectTimer_ < HardwareConfig::FlashDelay) return;
     effectTimer_ = now;
     strip_->setPixel(animationPixel_, settings_.red, settings_.green, settings_.blue);

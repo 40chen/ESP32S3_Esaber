@@ -1,5 +1,7 @@
 #include "WifiService.h"
 
+#include <esp_wifi.h>
+
 #include "../../include/HardwareConfig.h"
 
 void WifiService::begin() {
@@ -25,6 +27,10 @@ String WifiService::ssid() const {
 
 void WifiService::startAccessPoint() {
   WiFi.softAP(HardwareConfig::DefaultApSsid, HardwareConfig::DefaultApPassword);
+  // Beacons default to every 100 ms; 300 ms cuts the radio's periodic
+  // transmissions to a third with no effect on a phone parked on the console
+  // page.  Only makes sense after the AP is up.  IDF accepts 100-60000 ms.
+  esp_wifi_config_beacon_interval(WIFI_IF_AP, 300);
   Serial.printf("[WiFi] AP: %s (open, no password), http://%s\n", HardwareConfig::DefaultApSsid,
                 WiFi.softAPIP().toString().c_str());
 }

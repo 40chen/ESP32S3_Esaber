@@ -29,6 +29,13 @@ constexpr unsigned long kBlinkMaxInterval = 6400;
 constexpr unsigned long kBlinkCloseMs = 70;
 constexpr unsigned long kBlinkOpenMs = 115;
 
+// The backlight is the largest steady load on the 3.3 V rail, so it runs on
+// LEDC PWM at a reduced duty instead of a plain digital high.  The visible
+// parameters (frequency, resolution, duty) live in HardwareConfig next to the
+// pin; only the channel is an implementation detail here -- TFT_eSPI uses no
+// LEDC channels on this panel.
+constexpr uint8_t kBacklightPwmChannel = 0;
+
 constexpr unsigned long kIdleMinInterval = 1800;
 constexpr unsigned long kIdleMaxInterval = 4600;
 
@@ -58,6 +65,13 @@ void DisplayDriver::begin() {
   pinMode(HardwareConfig::DisplayBacklight, OUTPUT);
   digitalWrite(HardwareConfig::DisplayBacklight, LOW);
 
+  // Hand the pin to LEDC at zero duty; the level stays low, exactly as the
+  // digitalWrite above left it, until enableBacklight() raises the duty.
+  ledcSetup(kBacklightPwmChannel, HardwareConfig::DisplayBacklightPwmFrequency,
+            HardwareConfig::DisplayBacklightPwmRes);
+  ledcAttachPin(HardwareConfig::DisplayBacklight, kBacklightPwmChannel);
+  ledcWrite(kBacklightPwmChannel, 0);
+
   tft_.init();
   tft_.setRotation(0);
   tft_.invertDisplay(true);
@@ -67,7 +81,9 @@ void DisplayDriver::begin() {
 }
 
 void DisplayDriver::enableBacklight() {
-  digitalWrite(HardwareConfig::DisplayBacklight, HIGH);
+  const uint32_t maxDuty = (1u << HardwareConfig::DisplayBacklightPwmRes) - 1;
+  ledcWrite(kBacklightPwmChannel,
+            static_cast<uint32_t>(HardwareConfig::DefaultBacklightPct) * maxDuty / 100);
 }
 
 // init() only repeats the reset and the register table on a second call;

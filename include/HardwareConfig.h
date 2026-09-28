@@ -78,6 +78,14 @@ constexpr uint16_t PaSettleMs = 20;
 
 // ---------------------------------------------------------------- display
 constexpr int8_t DisplayBacklight = 8;
+// The backlight is the largest steady load on the 3.3 V rail (AMS1117 fed),
+// so it is driven by LEDC PWM instead of a plain digital high.  10 kHz sits
+// above the audible band (no whine into the amplifier) and outside the
+// camera-banding range; 66 % duty is visually near-indistinguishable
+// indoors.  Real-machine acceptance point: the QR screen must still scan.
+constexpr uint32_t DisplayBacklightPwmFrequency = 10000;
+constexpr uint8_t DisplayBacklightPwmRes = 10;  // bits: duty range 0..1023
+constexpr uint8_t DefaultBacklightPct = 66;
 
 // ----------------------------------------------------------------- button
 constexpr int8_t BootButton = 0;
@@ -106,10 +114,9 @@ constexpr uint16_t HardStrikeThreshold = 160;
 constexpr uint16_t OpenThreshold = 60;
 constexpr uint8_t GestureToggleCount = 20;
 constexpr uint32_t GestureInterval = 50;
-constexpr uint32_t HumTimeout = 30228;
-constexpr uint32_t HumActivationDelay = 2000;
-// Restarting the hum loop this early keeps it audible under a swing or hit.
-constexpr uint32_t HumSoundDelay = 1000;
+// The hum loop re-arms on the falling edge of playback (SaberController sees
+// it via AudioOutput::isRunning), so it needs no duration or delay constants:
+// any file the user picks just works.
 constexpr uint32_t SwingCooldown = 100;
 constexpr uint8_t PulseAmplitude = 10;
 constexpr uint16_t PulseDelay = 30;

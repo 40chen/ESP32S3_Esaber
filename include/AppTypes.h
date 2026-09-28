@@ -23,6 +23,12 @@ enum class EyePattern : uint8_t {
 constexpr uint8_t kSaberEffectCount = 7;
 constexpr uint8_t kEyePatternCount = 3;
 
+// User-selectable sound slots live on the SD card root.  Fixed-size buffers
+// rather than String: these ride along in every SaberSettings copy that the
+// settings handlers make, and a loop-task heap is exactly what a long web
+// session should not fragment.  48 bytes covers any sane effect-pack name.
+constexpr uint8_t kSoundNameLength = 48;
+
 struct SaberSettings {
   bool power = false;
   // #FF33CC, the pink-purple blade a fresh device starts with.  Only used as
@@ -40,4 +46,9 @@ struct SaberSettings {
   uint8_t volume = 80;
   SaberEffect effect = SaberEffect::Pulse;
   EyePattern eyePattern = EyePattern::Normal;
+  // Ignition, retraction and the idle hum loop.  Defaults mirror the classic
+  // sound pack shipped on the card.
+  char bootSound[kSoundNameLength] = "endlock1.wav";
+  char shutdownSound[kSoundNameLength] = "endlock2.wav";
+  char humSound[kSoundNameLength] = "111.wav";
 };

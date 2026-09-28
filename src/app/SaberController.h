@@ -56,12 +56,14 @@ class SaberController {
 
   unsigned long gestureTimer_ = 0;
   unsigned long pulseTimer_ = 0;
-  unsigned long humTimer_ = 0;
   unsigned long swingTimer_ = 0;
   unsigned long swingTimeout_ = 0;
   unsigned long strikeTimeout_ = 0;
   unsigned long effectTimer_ = 0;
   unsigned long hitTimer_ = 0;
+  // Ignition ramp start deadline: the first lit pixels wait out the
+  // amplifier's settle window so PA inrush and LED current never share a tick.
+  unsigned long ignitionLightDue_ = 0;
   unsigned long gestureCounter_ = 0;
   uint8_t gestureCooldown_ = 0;
   // Samples still needed before the twist window holds real data at every slot.

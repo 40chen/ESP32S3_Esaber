@@ -33,6 +33,9 @@ void SettingsStore::begin() {
       clampIndex(preferences_.getUChar("eye", static_cast<uint8_t>(EyePattern::Normal)),
                  kEyePatternCount));
   blenderIp_ = readString("blender_ip", "192.168.10.5");
+  readSound("boot_snd", saber_.bootSound, "endlock1.wav");
+  readSound("off_snd", saber_.shutdownSound, "endlock2.wav");
+  readSound("hum_snd", saber_.humSound, "111.wav");
 }
 
 // Preferences logs every miss at error level, which made a first boot look
@@ -40,6 +43,11 @@ void SettingsStore::begin() {
 String SettingsStore::readString(const char* key, const char* fallback) {
   if (!preferences_.isKey(key)) return String(fallback);
   return preferences_.getString(key, fallback);
+}
+
+void SettingsStore::readSound(const char* key, char* out, const char* fallback) {
+  const String value = readString(key, fallback);
+  strlcpy(out, value.c_str(), kSoundNameLength);
 }
 
 String SettingsStore::blenderIp() const {
@@ -57,6 +65,11 @@ void SettingsStore::saveSaber(const SaberSettings& settings) {
   preferences_.putUChar("volume", saber_.volume);
   preferences_.putUChar("effect", static_cast<uint8_t>(saber_.effect));
   preferences_.putUChar("eye", static_cast<uint8_t>(saber_.eyePattern));
+  // Sound names only change when the user picks a file, so these are written
+  // at web-save frequency, far below anything that could wear the NVS.
+  preferences_.putString("boot_snd", saber_.bootSound);
+  preferences_.putString("off_snd", saber_.shutdownSound);
+  preferences_.putString("hum_snd", saber_.humSound);
 }
 
 void SettingsStore::saveBlenderIp(const String& ip) {

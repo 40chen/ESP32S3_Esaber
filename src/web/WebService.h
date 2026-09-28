@@ -15,6 +15,7 @@ class WebService {
  private:
   void handleRoot();
   void handleStatus();
+  void handleSounds();
   void handleSettings();
   void handlePower();
   void handleBlender();
