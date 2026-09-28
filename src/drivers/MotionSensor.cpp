@@ -1,3 +1,8 @@
+// ============================================================================
+// MotionSensor —— MPU6050 + Madgwick AHRS 姿态融合
+// 输出三类数据：挥/砍判定用的原始幅值、眼睛用的欧拉角、
+// Blender 动捕用的四元数 + 航位推算位置。
+// ============================================================================
 #include "MotionSensor.h"
 
 #include <Wire.h>
@@ -6,17 +11,15 @@
 
 namespace {
 
-constexpr float kGravity = 9.80665f;
-// MPU6050_ACCEL_FS_16 reports 2048 LSB per g.  The old divisor of 16384 made
-// every acceleration eight times too small, so subtracting gravity left a
-// permanent ~8.6 m/s^2 bias and the position sent to Blender saturated at its
-// clamp immediately.
+constexpr float kGravity = 9.80665f;   // 标准重力 m/s²
+// MPU6050_ACCEL_FS_16 报 2048 LSB/g。旧的除数 16384 让所有加速度小了八倍，
+// 减重力后残留 ~8.6 m/s² 的固定偏置，发给 Blender 的位置直接饱和在钳位上。
 constexpr float kAccelScale = kGravity / HardwareConfig::AccelLsbPerGravity;
-// Madgwick expects degrees per second, which it converts to radians itself.
+// Madgwick 期望 °/s，它自己转弧度
 constexpr float kGyroScale = 1.0f / HardwareConfig::GyroLsbPerDegree;
-constexpr float kFilterRateHz = 1000.0f / HardwareConfig::MotionInterval;
-constexpr int16_t kMagnitudeDivisor = 100;
-constexpr int16_t kRotationDivisor = 2;
+constexpr float kFilterRateHz = 1000.0f / HardwareConfig::MotionInterval;   // 滤波器采样率
+constexpr int16_t kMagnitudeDivisor = 100;   // 幅值预除：防平方溢出
+constexpr int16_t kRotationDivisor = 2;      // 角速度幅值缩放（手感调校）
 
 float square(float value) { return value * value; }
 
@@ -41,8 +44,8 @@ void rotateToWorld(const float quaternion[4], float ax, float ay, float az, floa
 
 bool MotionSensor::begin() {
   imu_.initialize();
-  imu_.setFullScaleAccelRange(MPU6050_ACCEL_FS_16);
-  imu_.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+  imu_.setFullScaleAccelRange(MPU6050_ACCEL_FS_16);   // ±16g：砍击不饱和
+  imu_.setFullScaleGyroRange(MPU6050_GYRO_FS_250);    // ±250°/s：挥动精度
   connected_ = imu_.testConnection();
   filter_.begin(kFilterRateHz);
   if (!connected_) {
@@ -53,14 +56,15 @@ bool MotionSensor::begin() {
 
 void MotionSensor::update() {
   const unsigned long now = millis();
-  if (now - lastSample_ < HardwareConfig::MotionInterval) return;
+  if (now - lastSample_ < HardwareConfig::MotionInterval) return;   // 按节拍采样
 
-  const float deltaTime = static_cast<float>(now - lastSample_) / 1000.0f;
+  const float deltaTime = static_cast<float>(now - lastSample_) / 1000.0f;   // 实际间隔，积分用
   lastSample_ = now;
   if (!connected_) return;
 
   imu_.getMotion6(&data_.ax, &data_.ay, &data_.az, &data_.gx, &data_.gy, &data_.gz);
 
+  // 幅值（除 100 防溢出，平方和开方）：给挥/砍阈值判定用，不要物理单位
   const uint32_t ax = abs(data_.ax / kMagnitudeDivisor);
   const uint32_t ay = abs(data_.ay / kMagnitudeDivisor);
   const uint32_t az = abs(data_.az / kMagnitudeDivisor);
@@ -73,6 +77,7 @@ void MotionSensor::update() {
                         square(static_cast<float>(gz))) /
                    kRotationDivisor;
 
+  // 物理单位换算：m/s² 和 °/s，进 AHRS 滤波
   const float accelX = static_cast<float>(data_.ax) * kAccelScale;
   const float accelY = static_cast<float>(data_.ay) * kAccelScale;
   const float accelZ = static_cast<float>(data_.az) * kAccelScale;
@@ -80,6 +85,7 @@ void MotionSensor::update() {
                     static_cast<float>(data_.gy) * kGyroScale,
                     static_cast<float>(data_.gz) * kGyroScale, accelX, accelY, accelZ);
 
+  // 欧拉角（弧度）→ 四元数（w,x,y,z）：给眼睛视线和 Blender 遥测
   data_.roll = filter_.getRollRadians();
   data_.pitch = filter_.getPitchRadians();
   const float roll = data_.roll;
@@ -91,32 +97,31 @@ void MotionSensor::update() {
   const float sp = sin(pitch * 0.5f);
   const float cr = cos(roll * 0.5f);
   const float sr = sin(roll * 0.5f);
-  data_.quaternion[0] = cr * cp * cy + sr * sp * sy;
-  data_.quaternion[1] = sr * cp * cy - cr * sp * sy;
-  data_.quaternion[2] = cr * sp * cy + sr * cp * sy;
-  data_.quaternion[3] = cr * cp * sy - sr * sp * cy;
+  data_.quaternion[0] = cr * cp * cy + sr * sp * sy;   // w
+  data_.quaternion[1] = sr * cp * cy - cr * sp * sy;   // x
+  data_.quaternion[2] = cr * sp * cy + sr * cp * sy;   // y
+  data_.quaternion[3] = cr * cp * sy - sr * sp * cy;   // z
 
   const float accel[3] = {accelX, accelY, accelZ};
   updatePosition(accel, deltaTime);
 }
 
-// Dead-reckons a position for the Blender feed.  Acceleration is rotated into
-// the world frame, gravity removed, and a dead zone zeroes the drift that
-// would otherwise integrate away while the saber is held still.
+// 为 Blender 数据流做航位推算：加速度旋到世界系 → 去重力 →
+// 死区归零（否则静止持握时漂移会一直积分跑掉）。
 void MotionSensor::updatePosition(const float accel[3], float deltaTime) {
   float worldAccel[3];
   rotateToWorld(data_.quaternion, accel[0], accel[1], accel[2], worldAccel);
-  worldAccel[2] -= kGravity;
+  worldAccel[2] -= kGravity;   // 静止时抵消重力，只留真实运动
 
   for (uint8_t axis = 0; axis < 3; ++axis) {
     if (fabsf(worldAccel[axis]) < HardwareConfig::PositionDeadZone) {
-      worldAccel[axis] = 0.0f;
-      velocity_[axis] = 0.0f;
+      worldAccel[axis] = 0.0f;   // 死区内视为静止
+      velocity_[axis] = 0.0f;    // 速度同步归零，防积分漂移
     }
-    velocity_[axis] += worldAccel[axis] * deltaTime;
-    data_.position[axis] += velocity_[axis] * deltaTime;
+    velocity_[axis] += worldAccel[axis] * deltaTime;       // v = v + a·dt
+    data_.position[axis] += velocity_[axis] * deltaTime;   // x = x + v·dt
     data_.position[axis] =
         constrain(data_.position[axis], -HardwareConfig::PositionLimit,
-                  HardwareConfig::PositionLimit);
+                  HardwareConfig::PositionLimit);          // 限幅防跑飞
   }
 }

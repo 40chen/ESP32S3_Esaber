@@ -1,3 +1,6 @@
+// ============================================================================
+// SdCardDriver —— SD_MMC 挂载（音效文件所在，1-bit 模式省引脚）
+// ============================================================================
 #include "SdCardDriver.h"
 
 #include <SD_MMC.h>
@@ -7,12 +10,11 @@
 namespace {
 
 constexpr const char* kMountPoint = "/sdcard";
-constexpr bool kOneBitMode = true;
-constexpr bool kFormatIfMountFailed = false;
-constexpr int kFrequencyKhz = 20000;
-// The card reported 0x107 (timeout) during init, which is typical of a marginal
-// signal.  A second attempt at half the clock often trains where the first
-// did not.  Everything the saber plays lives on the card, so it is worth it.
+constexpr bool kOneBitMode = true;            // 1-bit：省 3 根数据线
+constexpr bool kFormatIfMountFailed = false;  // 绝不静默格式化用户的卡
+constexpr int kFrequencyKhz = 20000;          // 首选 20MHz
+// 卡在初始化时报过 0x107（超时），典型的信号边际问题——
+// 半频重试往往能训练成功。音源全在卡上，值得多试这一下。
 constexpr int kRetryFrequencyKhz = 10000;
 constexpr uint16_t kRetryDelayMs = 50;
 
@@ -29,7 +31,7 @@ bool SdCardDriver::begin() {
     return true;
   }
 
-  SD_MMC.end();
+  SD_MMC.end();                    // 半频重试前先彻底释放
   delay(kRetryDelayMs);
   if (mount(kRetryFrequencyKhz)) {
     Serial.printf("[SD] initialized at the reduced clock (%d kHz)\n", kRetryFrequencyKhz);

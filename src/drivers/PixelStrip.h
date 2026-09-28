@@ -4,31 +4,29 @@
 
 #include "../../include/HardwareConfig.h"
 
-// WS2812 strip with the brightness and the supply budget handled here.
+// WS2812 灯条：亮度与供电限流都收在这层。
 //
-// The frame is kept unscaled in a shadow buffer and only converted when it is
-// clocked out, which buys two things: a level change takes effect on the next
-// show() instead of waiting for the effect to repaint, and the supply limit
-// gets to see the colours that were asked for rather than an already dimmed
-// copy of them.  Adafruit_NeoPixel's own scaling is switched off for the same
-// reason -- it folds the level into the pixel data at set time, where nothing
-// can re-measure it afterwards.
+// 帧以未缩放形式存于影子缓冲，输出时才转换，换来两件事：
+// 电平改动下一次 show() 即生效（不用等特效重绘），
+// 且限流器看到的是"请求的颜色"而不是已经压暗的副本。
+// Adafruit_NeoPixel 自带的缩放因此被关掉——
+// 它在写入时就把电平折进像素数据，事后无法再量。
 class PixelStrip {
  public:
   PixelStrip();
   void begin();
   void clear();
-  void fill(uint8_t red, uint8_t green, uint8_t blue);
+  void fill(uint8_t red, uint8_t green, uint8_t blue);                    // 整条填色
   void setPixel(uint16_t index, uint8_t red, uint8_t green, uint8_t blue);
   void setPixel(uint16_t index, uint32_t color);
   uint32_t colorHsv(uint16_t hue) const;
   void setBrightness(uint8_t brightness);
-  void show();
+  void show();   // 输出：限流 → 缩放 → 锁存
 
  private:
   Adafruit_NeoPixel strip_;
-  uint8_t frame_[HardwareConfig::LedCount * 3] = {0};
+  uint8_t frame_[HardwareConfig::LedCount * 3] = {0};   // 影子帧缓冲（未缩放 RGB）
   uint8_t brightness_ = HardwareConfig::DefaultBrightness;
-  // Throttles the "frame limited" note, which otherwise repeats every frame.
+  // "帧被限流"提示的节流器，否则每帧都打
   unsigned long limitLogTimer_ = 0;
 };

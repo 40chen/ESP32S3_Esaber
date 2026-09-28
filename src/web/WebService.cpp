@@ -1,3 +1,9 @@
+// ============================================================================
+// WebService —— HTTP 控制台：固件内嵌页面 + REST API
+// 路由：/（内嵌页）/api/status（状态）/api/settings（设置）/api/power（开关）
+//       /api/sounds（SD 音频清单）/api/blender（动捕地址）
+// 所有 handler 都跑在 loop 任务上，禁止阻塞——页面是 PROGMEM 原始字符串。
+// ============================================================================
 #include "WebService.h"
 
 #include <ArduinoJson.h>
@@ -5,23 +11,20 @@
 
 namespace {
 
-// 512 bytes was the headroom for the old payload; the three selectable sound
-// names add up to ~150 bytes worst case (48-char names).
+// 旧负载 512B 就够；三个可选音效名最坏再加 ~150B（48 字符名）
 constexpr size_t kStatusBufferSize = 640;
-// The console dropdown never needs the whole card: 64 entries is already a
-// very full sound pack, and it bounds the directory walk on the loop task.
+// 控制台下拉不需要整张卡：64 个已经是很满的音效包，
+// 同时给 loop 任务上的目录遍历一个上界。
 constexpr size_t kMaxSoundEntries = 64;
 
-// A sound slot only ever plays one file from the SD card root, so the name
-// must survive being joined with "/" without escaping anywhere: flat name,
-// sane characters, no dot tricks.  Extension is not restricted here -- the
-// decoder's supported formats are a firmware property, and an unsupported
-// file simply plays nothing.
+// 音效槽位只会播 SD 根目录的一个文件，所以名字拼 "/" 前必须安全：
+// 扁平名、字符干净、无路径花招。这里不限扩展名——
+// 解码器支持哪些格式是固件属性，不支持的文件播出来就是没声。
 bool validSoundName(const String& name) {
   if (name.isEmpty() || name.length() >= kSoundNameLength) return false;
-  if (name[0] == '.') return false;                      // hidden files, ".."
-  if (name.indexOf("..") >= 0) return false;
-  if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;
+  if (name[0] == '.') return false;                      // 隐藏文件、".."
+  if (name.indexOf("..") >= 0) return false;             // 防目录穿越
+  if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;   // 防子目录
   for (unsigned int i = 0; i < name.length(); ++i) {
     const char c = name[i];
     const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -31,10 +34,9 @@ bool validSoundName(const String& name) {
   return true;
 }
 
-// Only names that actually sit on the card may be persisted; otherwise a
-// typo in a hand-crafted request would silently disable a sound slot.  The
-// extension check keeps both the dropdown and the slots inside the decoder's
-// supported formats (case-insensitive, per the /api/sounds contract).
+// 只有真实在卡上的名字才允许持久化：否则手搓请求里的一个拼写错误
+// 就会悄悄废掉一个音效槽。扩展名检查让下拉与槽位都落在
+// 解码器支持的格式内（大小写不敏感，与 /api/sounds 契约一致）。
 bool hasAudioExtension(const String& name) {
   const int dot = name.lastIndexOf('.');
   if (dot < 0) return false;
@@ -45,14 +47,14 @@ bool hasAudioExtension(const String& name) {
 
 bool soundOnCard(const String& name) {
   if (!validSoundName(name) || !hasAudioExtension(name)) return false;
-  return SD_MMC.exists("/" + name);
+  return SD_MMC.exists("/" + name);   // 最终真相：卡上有没有这个文件
 }
 constexpr size_t kJsonCapacity = 512;
 
 String effectName(uint8_t effect) {
   static const char* const names[kSaberEffectCount] = {"solid",  "pulse",   "rainbow",
                                                        "scanner", "unstable", "fire", "sparkle"};
-  return names[effect < kSaberEffectCount ? effect : 0];
+  return names[effect < kSaberEffectCount ? effect : 0];   // 越界回落 solid
 }
 
 String eyeName(uint8_t pattern) {
@@ -879,6 +881,12 @@ setInterval(poll, 2500);
 
 }  // namespace
 
+// 路由注册 + 各 API 入口。契约：
+//   GET  /api/status   → {power, color, brightness, volume, effect, eye,
+//                          bootSound, shutdownSound, humSound, blenderIp, wifi{...}}
+//   POST /api/settings → 可选参数 r/g/b, brightness, volume, effect, eye,
+//                          boot_sound, shutdown_sound, hum_sound（只改所带的槽）
+//   GET  /api/sounds   → {ok, sounds:[...]}：SD 根目录的合法音频名
 void WebService::begin(WebServer* server, SaberController* saber, WifiService* wifi,
                        SettingsStore* settings, MotionTelemetry* telemetry) {
   server_ = server;

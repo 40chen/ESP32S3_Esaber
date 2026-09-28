@@ -11,38 +11,32 @@ class AudioBoard;
 class DriverPins;
 }  // namespace audio_driver
 
-// ES8311 codec plus the ESP32-audioI2S decoder.
-//
-// Three things here are deliberate and easy to undo by accident:
-//
-//   * The gain structure.  The software volume stays at unity and the level is
-//     set on the codec, because the reverse arrangement (attenuate in software,
-//     boost in the codec) amplifies the truncation noise of the attenuation by
-//     exactly as much as it boosts the signal.
-//   * Stream switches mute the codec rather than the software volume.  The I2S
-//     DMA holds around 190 ms of audio, so a software change is heard a fifth
-//     of a second later -- long after the stream has been swapped and the DMA
-//     flushed mid waveform, which is what a click is.
-//   * The amplifier is only powered while the blade is on.  PA_EN left high
-//     makes it amplify the codec's own noise floor, audible as hiss in a quiet
-//     room.
+// ============================================================================
+// AudioOutput —— ES8311 codec + ESP32-audioI2S 解码器
+// ============================================================================
+// 三条刻意为之、极易被"顺手优化"掉的设计：
+//   * 增益结构。软件音量恒为单位增益，电平设在 codec 上——
+//     反过来（软件衰减 + codec 增益）会把衰减的截断噪声放大得和信号一样多。
+//   * 切流静音在 codec 端而非软件端。I2S DMA 缓着约 190ms 音频，
+//     软件改变五分之一秒后才被听见——那时流早换了、DMA 在波形中途被冲掉，
+//     那就是那声"咔"。
+//   * 功放只在刀亮时上电。PA_EN 挂高会让它放大 codec 自己的本底噪声，
+//     安静房间里就是嘶嘶声。
+// ============================================================================
 class AudioOutput {
  public:
-  bool begin(bool sdReady);
-  void loop();
-  void play(const char* file);
+  bool begin(bool sdReady);     // sdReady=挂卡结果：没卡不扫音源
+  void loop();                  // 每圈主循环：喂解码器 + 静音/功放状态机
+  void play(const char* file);  // 播放 SD 卡上的音效文件
 
-  // True while any stream (effect or hum) is on the air.  The saber uses the
-  // falling edge to re-arm the hum loop, which is what makes the hum work
-  // with any file duration instead of a baked-in one.
+  // 任何流（音效或 hum）在播时为 true。光剑用它 falling edge 重新武装
+  // hum 循环——这正是不依赖固定时长、任何文件都能当 hum 的原因。
   bool isRunning() const;
 
-  // Audio level in percent, 0..100, where 100 is the loudest the firmware
-  // allows.  Applied to the codec, so it takes effect immediately.
+  // 音量百分比 0..100，100 = 固件允许的最响档。作用于 codec，立即生效
   void setVolume(uint8_t percent);
 
-  // The amplifier follows the blade: on while the saber is lit, off once the
-  // retraction sound has finished.
+  // 功放跟随刀：亮刀期间开，收刃音播完后关
   void setAmplifierEnabled(bool enabled);
   ~AudioOutput();
 
@@ -57,13 +51,13 @@ class AudioOutput {
   bool ready_ = false;
   bool started_ = false;
 
-  // Codec DAC volume in the codec's own units, not the console's percentage.
+  // codec 的 DAC 音量，用 codec 自己的单位，不是控制台的百分比
   uint8_t codecVolume_ = HardwareConfig::CodecVolume;
 
-  bool amplifierEnabled_ = false;
-  bool amplifierWanted_ = false;
-  // millis() deadline for the pending unmute, 0 when nothing is pending.
+  bool amplifierEnabled_ = false;    // 功放实际状态
+  bool amplifierWanted_ = false;     // 业务层想要的功放状态
+  // 挂起的解除静音时刻（millis()），0 = 无挂起
   unsigned long unmuteDue_ = 0;
-  // millis() deadline for switching the amplifier off once the codec is muted.
+  // codec 静音后关功放的到期时刻，0 = 无挂起
   unsigned long amplifierOffDue_ = 0;
 };

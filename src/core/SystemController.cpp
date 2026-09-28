@@ -1,3 +1,8 @@
+// ============================================================================
+// SystemController —— 总装配体：持有全部子系统、接线、驱动主循环
+// 初始化顺序刻意设计（见 begin() 内逐段注释）；
+// 主循环顺序有讲究：音频解码最优先（断流可闻），其余依次。
+// ============================================================================
 #include "SystemController.h"
 
 #include <Wire.h>
@@ -10,10 +15,10 @@
 
 namespace {
 
-constexpr unsigned long kSerialSettleMs = 1000;
-constexpr uint16_t kQrRefreshMs = 1000;
-// Gap between the backlight and the radio so their current steps cannot land
-// together on a supply that is already marginal.
+constexpr unsigned long kSerialSettleMs = 1000;   // 串口稳定等待
+constexpr uint16_t kQrRefreshMs = 1000;           // 二维码地址查询节流
+// 【改动④关联 · 启动错峰】背光与 radio 的启动间隔——两者的电流台阶
+// 不落在同一时刻，减轻本就紧张的 3.3V 轨压力。
 constexpr unsigned long kBootStepSettleMs = 80;
 // One-shot resource report, late enough that the web server and the audio
 // decoder have both run at least once.
@@ -21,6 +26,7 @@ constexpr unsigned long kDiagnosticsDelayMs = 5000;
 
 // A reset reason is the only way to tell a brown-out from a crash from a
 // watchdog reset after the fact, so name it explicitly on every boot.
+// 复位原因是事后区分"欠压 / 崩溃 / 看门狗"的唯一线索，每次开机都明确报出
 const char* resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
     case ESP_RST_POWERON: return "power-on";
@@ -40,67 +46,62 @@ const char* resetReasonName(esp_reset_reason_t reason) {
 }  // namespace
 
 void SystemController::begin() {
-  // First, before anything slow or current hungry.  The strip latches whatever
-  // its floating data line picks up while the MCU is in reset, and it keeps
-  // those colours until the first show().  That show() used to happen after the
-  // serial settle, the NVS read, the panel init, the card mount and the codec
-  // settle -- well over a second during which the blade glowed a random colour
-  // and pulled a matching random current, straight through the panel's
-  // initialisation.  Holding the line low stops anything further being latched;
-  // the all-black frame clears what already was.
+  // ---- 第 1 步：灯条数据线先拉低（一切慢操作/大电流操作之前）----
+  // MCU 复位期间，灯条会把悬空数据线上的噪声锁存成随机颜色，并保持到第一次
+  // show()。那次 show() 曾发生在串口稳定、NVS 读取、屏幕初始化、挂卡、解码器
+  // 稳定之后——超过一秒里刀身发着随机颜色、抽着随机电流，还穿过屏幕初始化窗口。
+  // 数据线保持低电平可阻止继续锁存；全黑帧清掉已锁存的。
   pinMode(HardwareConfig::LedPin, OUTPUT);
-  digitalWrite(HardwareConfig::LedPin, LOW);
+  digitalWrite(HardwareConfig::LedPin, LOW);          // 数据线拉低 = 禁止锁存
   strip_.begin();
 
-  // The amplifier enable floats during reset as well; left floating it can sit
-  // high and amplify the codec's noise floor before anything is ever played.
+  // ---- 第 2 步：功放使能脚拉低 ----
+  // 复位期间它也是悬空的：可能停在高电平，让编解码器的本底噪声直接上喇叭。
   pinMode(HardwareConfig::PaEnable, OUTPUT);
-  digitalWrite(HardwareConfig::PaEnable, LOW);
+  digitalWrite(HardwareConfig::PaEnable, LOW);        // 静默功放
 
-  // Before the first read of it, so a floating pin cannot look like a press.
+  // ---- 第 3 步：BOOT 按键上拉（在读它之前，悬空会被误判成按下）----
   pinMode(HardwareConfig::BootButton, INPUT_PULLUP);
 
   Serial.begin(115200);
-  delay(kSerialSettleMs);
+  delay(kSerialSettleMs);                             // 等串口稳定再打日志
   Serial.println("\n[ESABER] starting");
   logBuildStamp();
   logResetReason();
 
-  Wire.begin(HardwareConfig::I2cSda, HardwareConfig::I2cScl);
-  settings_.begin();
-  display_.begin();
+  // ---- 第 4 步：基础服务 ----
+  Wire.begin(HardwareConfig::I2cSda, HardwareConfig::I2cScl);   // IMU 总线
+  settings_.begin();                                  // NVS 读回用户设置
+  display_.begin();                                   // 屏幕初始化（背光仍灭）
 
   const bool motionReady = motion_.begin();
   const bool sdReady = sdCard_.begin();
-  const bool audioReady = audio_.begin(sdReady);
+  const bool audioReady = audio_.begin(sdReady);      // 挂卡成功才扫音效
   hardwareReady_ = motionReady && sdReady && audioReady;
-  // One line that says which stage a bad boot stopped at.  The panel init can
-  // only be judged from the serial log when it fails, because a dead panel
-  // looks the same whatever went wrong.
+  // 一行日志说明坏启动卡在哪一环。屏幕挂了只能看串口判断（死屏上看不出差别）。
   Serial.printf("[ESABER] motion %s, sd %s, audio %s\n", motionReady ? "ok" : "FAIL",
                 sdReady ? "ok" : "FAIL", audioReady ? "ok" : "FAIL");
 
-  // Second chance for the panel.  The card mount and the codec settle are the
-  // heaviest current steps in the boot, and the panel's register sequence is
-  // open loop: disturbed in that window it stays broken until the next power
-  // cycle.  Redone while the backlight is still off, so it costs nothing
-  // visible -- but it does cost the panel's reset delay, hence once only.
+  // ---- 第 5 步：屏幕二次修复 ----
+  // 挂卡和解码器稳定是启动里最重的电流台阶，而屏幕寄存器序列是开环的：
+  // 在那个窗口被打断就一直坏到下次断电。趁背光还灭着重跑一遍，
+  // 代价只是屏幕的复位延时——所以只跑这一次。
   display_.repairPanel();
-  display_.showBoot(hardwareReady_);
+  display_.showBoot(hardwareReady_);                  // 绿 READY / 红 FAIL
   Serial.println("[BOOT] panel ready");
 
-  // The radio draws its heaviest pulse while it calibrates, and the backlight's
-  // steady current is a large fraction of this supply's budget.  They are kept
-  // apart: the panel is initialised and painted with the backlight still off,
-  // the radio starts on its own, and only then does the screen light up.
+  // ---- 第 6 步：启动错峰【改动④关联】----
+  // radio 校准时抽最重的脉冲，背光稳定电流又是供电预算的大头——两者错开：
+  // 屏幕背光仍灭时完成初始化和首绘 → radio 单独启动 → 最后才点亮背光。
   delay(kBootStepSettleMs);
 
-  wifi_.begin();
+  wifi_.begin();                                      // AP 热点 + beacon 配置
   Serial.println("[BOOT] wifi up");
 
-  display_.enableBacklight();
+  display_.enableBacklight();                         // 【改动①入口】PWM 66% 点亮
   Serial.println("[BOOT] backlight on");
 
+  // ---- 第 7 步：业务子系统 ----
   telemetry_.begin(settings_.blenderIp());
   saber_.begin(&audio_, &strip_, &motion_, settings_.saber());
   web_.begin(&server_, &saber_, &wifi_, &settings_, &telemetry_);
@@ -108,24 +109,23 @@ void SystemController::begin() {
 }
 
 void SystemController::update() {
-  // Keep the audio decoder fed first: everything below can block.
-  saber_.update();
-  server_.handleClient();
-  telemetry_.update(motion_);
+  // 先喂音频解码器：下面任何一步都可能阻塞，断流是听得见的
+  saber_.update();                    // 光剑：手势/音效/灯效
+  server_.handleClient();             // web 控制台请求
+  telemetry_.update(motion_);         // 动捕 UDP 遥测（10Hz）
   handleBootButton();
   logDiagnosticsOnce();
 
   if (screenMode_ == ScreenMode::Eye) {
     const MotionData& motion = motion_.data();
-    display_.drawEye(motion.roll / HardwareConfig::EyeGazeRadiansHorizontal,
-                     motion.pitch / HardwareConfig::EyeGazeRadiansVertical,
+    display_.drawEye(motion.roll / HardwareConfig::EyeGazeRadiansHorizontal,   // roll→水平视线
+                     motion.pitch / HardwareConfig::EyeGazeRadiansVertical,    // pitch→垂直视线
                      settings_.saber().eyePattern);
     return;
   }
 
-  // Throttle only the address lookup: building localUrl() every iteration
-  // churns the heap.  The driver itself skips the repaint while the address is
-  // unchanged, so this does not redraw the QR once a second.
+  // 只节流地址查询：每圈构造 localUrl() 会搅动堆。驱动对未变化的地址
+  // 本来就跳过重绘，所以这里不是每秒重画二维码。
   const unsigned long now = millis();
   if (now - lastQrRefresh_ > kQrRefreshMs) {
     lastQrRefresh_ = now;
@@ -133,9 +133,8 @@ void SystemController::update() {
   }
 }
 
-// Reported once, a few seconds in.  The headroom figure is the quickest way
-// to confirm or rule out a loop-task stack overflow behind the reboots; if it
-// trends towards zero the stack needs raising again.
+// 启动几秒后报告一次。栈余量是判断"重启背后是否栈溢出"最快的依据：
+// 如果趋势逼近 0，就要再加大栈了。
 void SystemController::logDiagnosticsOnce() {
   if (diagnosticsLogged_ || millis() < kDiagnosticsDelayMs) return;
   diagnosticsLogged_ = true;

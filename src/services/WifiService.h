@@ -3,18 +3,19 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-// Brings up the access point the console is reached through.
-//
-// There is no station mode on purpose.  Joining a home network used to be the
-// first thing the console asked for, which meant a mistyped password could lock
-// the device away until it was reflashed, and it left the console at an address
-// that changed with the DHCP lease.  On its own access point the address is
-// always the same, so the QR code on the screen always works.
+// ============================================================================
+// WifiService —— 控制台的 AP 热点
+// ============================================================================
+// 故意只做 AP、不做 STA（不连家里路由器）：
+// 以前控制台开机先问"连哪个 WiFi"，密码输错一次设备就锁死到重新刷机，
+// 而且地址随 DHCP 租约漂移，屏上二维码会失效。用自己的热点，
+// 地址永远是 192.168.4.1，二维码永远有效。
+// ============================================================================
 class WifiService {
  public:
   void begin();
 
-  String localUrl() const;
+  String localUrl() const;   // http://192.168.4.1（二维码与跳转用）
   String ssid() const;
 
  private:
