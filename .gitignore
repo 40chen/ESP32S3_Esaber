@@ -4,3 +4,5 @@
 
 __pycache__/
 *.pyc
+assets/audio packet/
+.pio/
