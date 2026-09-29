@@ -23,10 +23,18 @@ bool mount(int frequencyKhz) {
   return SD_MMC.begin(kMountPoint, kOneBitMode, kFormatIfMountFailed, frequencyKhz);
 }
 
+// 双音效目录开机即建（目录已存在时 mkdir 返回 false，忽略即可）。
+// 目录缺席时控制台的分组下拉会是两个空组，用户容易摸不着头脑。
+void ensureSoundFolders() {
+  SD_MMC.mkdir(String("/") + HardwareConfig::SfxDefaultDir);
+  SD_MMC.mkdir(String("/") + HardwareConfig::SfxUserDir);
+}
+
 }  // namespace
 
 bool SdCardDriver::begin() {
   if (mount(kFrequencyKhz)) {
+    ensureSoundFolders();
     Serial.println("[SD] initialized");
     return true;
   }
@@ -34,10 +42,27 @@ bool SdCardDriver::begin() {
   SD_MMC.end();                    // 半频重试前先彻底释放
   delay(kRetryDelayMs);
   if (mount(kRetryFrequencyKhz)) {
+    ensureSoundFolders();
     Serial.printf("[SD] initialized at the reduced clock (%d kHz)\n", kRetryFrequencyKhz);
     return true;
   }
 
   Serial.println("[SD] initialization failed - check the card is seated");
   return false;
+}
+
+String SdCardDriver::resolveSoundPath(const String& name) {
+  if (name.isEmpty()) return String();
+  if (name.indexOf('/') >= 0) {   // 带目录前缀的完整引用，原样校验
+    return SD_MMC.exists("/" + name) ? name : String();
+  }
+  // 裸文件名回落顺序：新约定 sfx_default → 旧约定根目录 → sfx_user 兜底
+  const String candidates[3] = {
+      String(HardwareConfig::SfxDefaultDir) + "/" + name,
+      name,
+      String(HardwareConfig::SfxUserDir) + "/" + name};
+  for (const String& candidate : candidates) {
+    if (SD_MMC.exists("/" + candidate)) return candidate;
+  }
+  return String();
 }

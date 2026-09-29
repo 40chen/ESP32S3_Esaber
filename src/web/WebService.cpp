@@ -9,6 +9,9 @@
 #include <ArduinoJson.h>
 #include <SD_MMC.h>
 
+#include "../../include/HardwareConfig.h"
+#include "../drivers/SdCardDriver.h"
+
 namespace {
 
 // 旧负载 512B 就够；三个可选音效名最坏再加 ~150B（48 字符名）
@@ -17,16 +20,22 @@ constexpr size_t kStatusBufferSize = 640;
 // 同时给 loop 任务上的目录遍历一个上界。
 constexpr size_t kMaxSoundEntries = 64;
 
-// 音效槽位只会播 SD 根目录的一个文件，所以名字拼 "/" 前必须安全：
-// 扁平名、字符干净、无路径花招。这里不限扩展名——
-// 解码器支持哪些格式是固件属性，不支持的文件播出来就是没声。
+// 音效槽位引用形如 "sfx_default/x.wav"、"sfx_user/x.wav"，或旧格式的裸文件名
+//（播放端按目录回落）。只放行这两个白名单目录 + 扁平干净的名字，杜绝路径
+// 花招。这里不限扩展名——解码器支持哪些格式是固件属性，不支持的文件播出
+// 来就是没声。
 bool validSoundName(const String& name) {
-  if (name.isEmpty() || name.length() >= kSoundNameLength) return false;
-  if (name[0] == '.') return false;                      // 隐藏文件、".."
+  String file = name;
+  if (name.startsWith(String(HardwareConfig::SfxDefaultDir) + "/") ||
+      name.startsWith(String(HardwareConfig::SfxUserDir) + "/")) {
+    file = name.substring(name.indexOf('/') + 1);
+  }
+  if (file.isEmpty() || name.length() >= kSoundNameLength) return false;
+  if (file[0] == '.') return false;                      // 隐藏文件、".."
   if (name.indexOf("..") >= 0) return false;             // 防目录穿越
-  if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0) return false;   // 防子目录
-  for (unsigned int i = 0; i < name.length(); ++i) {
-    const char c = name[i];
+  if (file.indexOf('/') >= 0 || file.indexOf('\\') >= 0) return false;   // 文件名内不得再有分隔符
+  for (unsigned int i = 0; i < file.length(); ++i) {
+    const char c = file[i];
     const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                     (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
     if (!ok) return false;
@@ -47,7 +56,30 @@ bool hasAudioExtension(const String& name) {
 
 bool soundOnCard(const String& name) {
   if (!validSoundName(name) || !hasAudioExtension(name)) return false;
-  return SD_MMC.exists("/" + name);   // 最终真相：卡上有没有这个文件
+  // 最终真相：卡上有没有这个文件（含裸文件名的目录回落规则）
+  return !SdCardDriver::resolveSoundPath(name).isEmpty();
+}
+
+// 扫一个音效目录：合法音频裸名收进 group，并往 flat 追加带目录前缀的
+// 完整引用（兼容旧版控制台的平铺字段）。
+void scanSoundFolder(const char* dir, JsonArray& group, JsonArray& flat) {
+  if (SD_MMC.cardType() == CARD_NONE) return;
+  File folder = SD_MMC.open(String("/") + dir);
+  if (!folder || !folder.isDirectory()) return;
+  File entry = folder.openNextFile();
+  int visited = 0;   // 目录项上界：病态卡片也榨不干 loop 任务
+  while (entry && group.size() < kMaxSoundEntries && visited++ < 256) {
+    String name = entry.name();
+    const int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    if (validSoundName(name) && hasAudioExtension(name)) {
+      group.add(name);
+      flat.add(String(dir) + "/" + name);
+    }
+    entry.close();
+    entry = folder.openNextFile();
+  }
+  folder.close();
 }
 constexpr size_t kJsonCapacity = 512;
 
@@ -400,7 +432,7 @@ input[type=range]::-moz-range-thumb{width:26px;height:26px;border:none;border-ra
 
     <div class="card" data-card="sounds">
       <h2>音效</h2>
-      <p class="hint">从 SD 卡根目录选择音频文件（.wav / .flac / .mp3），即选即存、断电不丢；底噪换曲立即生效</p>
+      <p class="hint">从 SD 卡 sfx_default（默认音效）或 sfx_user（我的音效）文件夹选择音频（.wav / .flac / .mp3），即选即存、断电不丢；底噪换曲立即生效</p>
       <div class="field">
         <label for="bootSound">开机音效（开刃）</label>
         <select class="input select" id="bootSound" aria-label="开机音效选择"></select>
@@ -470,7 +502,8 @@ var EFFECT_NAMES = ['常亮','呼吸','彩虹','扫描','不稳定','火焰','�
 
 /* ---------------- 状态 ---------------- */
 var S = {power:false, color:'#0A84FF', brightness:80, volume:14, volumeMax:21, effect:1, eye:0,
-         bootSound:'endlock1.wav', shutdownSound:'endlock2.wav', humSound:'111.wav', sounds:[],
+         bootSound:'endlock1.wav', shutdownSound:'endlock2.wav', humSound:'111.wav',
+         soundsDefault:[], soundsUser:[],
          blenderIp:'', ssid:'', url:'', connected:false};
 var localUntil = 0;        // 用户操作后的静默期：轮询不回写控件，避免打架
 var demo = false;          // 演示模式（无设备时的可交互预览，显式进入）
@@ -548,46 +581,66 @@ function setView(view){
 
 /* ---------------- 音效 ---------------- */
 var soundLoaded = false;   // 每次进入控制台只拉一次 SD 清单，刷新页面重读
-var DEMO_SOUNDS = ['111.wav','endlock1.wav','endlock2.wav','clsh1.wav','clsh2.wav','swng1.wav'];
+var DEMO_DEFAULT = ['111.wav','endlock1.wav','endlock2.wav','clsh1.wav','clsh2.wav','swng1.wav','force1.wav'];
+var DEMO_USER = ['my-hum.wav','my-clash.wav'];
 function loadSounds(){
   if (demo){
-    S.sounds = DEMO_SOUNDS.slice();
+    S.soundsDefault = DEMO_DEFAULT.slice();
+    S.soundsUser = DEMO_USER.slice();
     soundLoaded = true;
     renderSoundSelects();
     return;
   }
   fetch('/api/sounds').then(function(r){ return r.json(); }).then(function(j){
-    S.sounds = (j && j.sounds) || [];
+    S.soundsDefault = (j && j['default']) || [];
+    S.soundsUser = (j && j['user']) || [];
     soundLoaded = true;
     renderSoundSelects();
   }).catch(function(){
-    S.sounds = [];
+    S.soundsDefault = [];
+    S.soundsUser = [];
     renderSoundSelects();
   });
 }
 function fillSoundSelect(id, current){
   var sel = $(id);
   sel.innerHTML = '';
-  var names = S.sounds;
+  // 旧 NVS/旧回显是裸文件名：归一化成带目录前缀的值再匹配选项
+  if (current && current.indexOf('/') < 0){
+    if (S.soundsDefault.indexOf(current) >= 0) current = 'sfx_default/' + current;
+    else if (S.soundsUser.indexOf(current) >= 0) current = 'sfx_user/' + current;
+  }
+  var groups = [['默认音效', S.soundsDefault, 'sfx_default/'], ['我的音效', S.soundsUser, 'sfx_user/']];
+  var total = 0;
+  for (var g = 0; g < groups.length; g++){
+    if (!groups[g][1].length) continue;
+    var og = document.createElement('optgroup');
+    og.label = groups[g][0];
+    for (var i = 0; i < groups[g][1].length; i++){
+      var o = document.createElement('option');
+      o.value = groups[g][2] + groups[g][1][i];
+      o.textContent = groups[g][1][i];
+      og.appendChild(o);
+      total++;
+    }
+    sel.appendChild(og);
+  }
   // SD 卡被更换后当前值可能不在清单里：保留原值选项，避免静默换音
-  if (current && names.indexOf(current) < 0){
-    var keep = document.createElement('option');
-    keep.value = current;
-    keep.textContent = current + '（SD 缺失）';
-    sel.appendChild(keep);
+  if (current){
+    var known = sel.querySelector('option[value="' + current + '"]');
+    if (!known){
+      var keep = document.createElement('option');
+      keep.value = current;
+      keep.textContent = current + '（SD 缺失）';
+      sel.appendChild(keep);
+    }
+    sel.value = current;
   }
-  for (var i = 0; i < names.length; i++){
-    var o = document.createElement('option');
-    o.value = names[i];
-    o.textContent = names[i];
-    sel.appendChild(o);
-  }
-  if (current) sel.value = current;
-  sel.disabled = names.length === 0;
+  sel.disabled = total === 0;
 }
 function renderSoundSelects(){
-  if (!S.sounds.length){
-    $('soundsMsg').textContent = '未在 SD 卡根目录发现音频文件（.wav / .flac / .mp3）';
+  if (!S.soundsDefault.length && !S.soundsUser.length){
+    $('soundsMsg').textContent = 'SD 卡里没有音频：把音效包放进 sfx_default，或把自己的文件放进 sfx_user（.wav / .flac / .mp3）';
     $('soundsMsg').className = 'msg err';
   } else {
     $('soundsMsg').textContent = '';
@@ -886,7 +939,8 @@ setInterval(poll, 2500);
 //                          bootSound, shutdownSound, humSound, blenderIp, wifi{...}}
 //   POST /api/settings → 可选参数 r/g/b, brightness, volume, effect, eye,
 //                          boot_sound, shutdown_sound, hum_sound（只改所带的槽）
-//   GET  /api/sounds   → {ok, sounds:[...]}：SD 根目录的合法音频名
+//   GET  /api/sounds   → {ok, default:[...], user:[...], sounds:[...]}：
+//                        两个音效目录的合法音频（sounds=带前缀的兼容字段）
 void WebService::begin(WebServer* server, SaberController* saber, WifiService* wifi,
                        SettingsStore* settings, MotionTelemetry* telemetry) {
   server_ = server;
@@ -948,28 +1002,18 @@ void WebService::handleStatus() {
   server_->send(200, "application/json", String(output, length));
 }
 
-// Lists the playable audio files on the SD card root for the console
-// dropdowns.  The walk is bounded by kMaxSoundEntries so a pathological card
-// can never stall the loop task that also runs the audio decoder.
+// Lists the playable audio in the two sound folders for the console
+// dropdowns: {ok, default:[裸名...], user:[裸名...], sounds:[带前缀引用...]}。
+// 两组遍历都受 kMaxSoundEntries 与目录项上限约束，病态卡片不可能把同时
+// 跑着音频解码器的 loop 任务拖死。
 void WebService::handleSounds() {
   JsonDocument json;
-  JsonArray sounds = json["sounds"].to<JsonArray>();
-  if (SD_MMC.cardType() != CARD_NONE) {
-    File root = SD_MMC.open("/");
-    if (root && root.isDirectory()) {
-      File entry = root.openNextFile();
-      while (entry && sounds.size() < kMaxSoundEntries) {
-        String name = entry.name();
-        const int slash = name.lastIndexOf('/');
-        if (slash >= 0) name = name.substring(slash + 1);
-        if (validSoundName(name) && hasAudioExtension(name)) sounds.add(name);
-        entry.close();
-        entry = root.openNextFile();
-      }
-      root.close();
-    }
-  }
-  json["ok"] = sounds.size() > 0;
+  JsonArray defaults = json["default"].to<JsonArray>();
+  JsonArray users = json["user"].to<JsonArray>();
+  JsonArray flat = json["sounds"].to<JsonArray>();   // 兼容旧版控制台
+  scanSoundFolder(HardwareConfig::SfxDefaultDir, defaults, flat);
+  scanSoundFolder(HardwareConfig::SfxUserDir, users, flat);
+  json["ok"] = (defaults.size() + users.size()) > 0;
   String output;
   serializeJson(json, output);
   sendJson(200, output);

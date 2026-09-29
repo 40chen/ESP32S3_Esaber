@@ -27,9 +27,10 @@ enum class EyePattern : uint8_t {
 constexpr uint8_t kSaberEffectCount = 7;
 constexpr uint8_t kEyePatternCount = 3;
 
-// 用户可选音效槽位的文件在 SD 卡根目录。用定长缓冲而非 String：
+// 用户可选音效槽位存相对路径："sfx_default/x.wav"、"sfx_user/x.wav"；
+// 旧数据是裸文件名（播放端按目录回落，无需迁移）。用定长缓冲而非 String：
 // 它们随每次 SaberSettings 拷贝走，loop 任务的堆最不该被长 web 会话
-// 碎片化。48 字节足够放任何正常的音效包文件名。
+// 碎片化。48 字节 = 目录前缀(12) + 35 字符文件名 + 结尾，足够。
 constexpr uint8_t kSoundNameLength = 48;
 
 // 控制台可改的全部设置：web 端读写、NVS 持久化、业务层消费

@@ -10,6 +10,7 @@
 #include <SD_MMC.h>
 
 #include "../../include/HardwareConfig.h"
+#include "SdCardDriver.h"
 
 #include <Audio.h>
 #include <AudioBoard.h>
@@ -104,6 +105,11 @@ bool AudioOutput::isRunning() const {
 
 void AudioOutput::play(const char* file) {
   if (!ready_) return;
+  // 先解析路径再动功放/静音状态机：卡上没有的文件静默跳过，不产生
+  // 无意义的功放脉冲与静音-解除循环。裸文件名按 sfx_default → 根目录 →
+  // sfx_user 回落（旧 NVS 值与内置碰撞/挥动音效表无需迁移即可继续播放）。
+  const String path = SdCardDriver::resolveSoundPath(file);
+  if (path.isEmpty()) return;
 
   // 播音效就隐含"要功放"，无论刀当前什么状态：收刃音也必须听得见
   setAmplifierEnabled(true);
@@ -113,7 +119,7 @@ void AudioOutput::play(const char* file) {
   // 软件改变要五分之一秒后才被听见——那时流已切换、环形缓冲已在波形
   // 任意位置被冲掉，那就是那声"咔"。codec 的静音带斜坡且直接作用于 DAC。
   board_->setMute(true);
-  audio_->connecttoFS(SD_MMC, file);
+  audio_->connecttoFS(SD_MMC, path.c_str());
   unmuteDue_ = millis() + HardwareConfig::MuteSwitchMs;   // 到点后自动解除静音
 }
 

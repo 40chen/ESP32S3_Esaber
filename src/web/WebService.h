@@ -16,7 +16,7 @@ class WebService {
  private:
   void handleRoot();       // /        → PROGMEM 内嵌页面
   void handleStatus();     // /api/status
-  void handleSounds();     // /api/sounds：扫 SD 根目录音频
+  void handleSounds();     // /api/sounds：扫两个音效目录，分组返回
   void handleSettings();   // /api/settings：可选参数，只改所带的槽
   void handlePower();      // /api/power：开刃/收刃
   void handleBlender();    // /api/blender：动捕目标 IP

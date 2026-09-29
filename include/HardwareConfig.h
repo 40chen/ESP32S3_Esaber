@@ -83,6 +83,12 @@ constexpr uint16_t MuteSwitchMs = 25;
 // 让功放涌流和 LED 电流错开 tick，不在 3.3V 轨上叠加。
 constexpr uint16_t PaSettleMs = 20;
 
+// SD 卡音效双目录：固件启动时自动创建（已存在则跳过）。
+// 目录用 ASCII 命名——SD 卡文件系统默认代码页对中文长名支持不稳，
+// 「默认音效 / 我的音效」的中文标签由控制台前端负责显示。
+constexpr const char* const SfxDefaultDir = "sfx_default";  // 出厂音效（audio packet 全集）
+constexpr const char* const SfxUserDir = "sfx_user";        // 用户自定义音效
+
 // ---------------------------------------------------------------- display
 constexpr int8_t DisplayBacklight = 8;           // 背光控制脚（GC9A01 圆屏）
 // 背光是 3.3V 轨（AMS1117 供电）上最大的静态负载，所以用 LEDC PWM 驱动
