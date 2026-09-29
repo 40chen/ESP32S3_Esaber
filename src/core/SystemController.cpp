@@ -112,7 +112,8 @@ void SystemController::update() {
   // 先喂音频解码器：下面任何一步都可能阻塞，断流是听得见的
   saber_.update();                    // 光剑：手势/音效/灯效
   server_.handleClient();             // web 控制台请求
-  telemetry_.update(motion_);         // 动捕 UDP 遥测（10Hz）
+  settings_.tick();                   // 冲刷到期的 NVS 延迟写入（500ms 节流窗口）
+  telemetry_.update(motion_);         // 动捕 UDP 遥测（50Hz，协议 v1 31B 帧）
   handleBootButton();
   logDiagnosticsOnce();
 

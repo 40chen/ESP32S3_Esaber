@@ -114,7 +114,7 @@ constexpr uint32_t LoopStackSize = 16384;
 // ----------------------------------------------------------------- motion
 // MPU6050 采样与动捕遥测节拍。
 constexpr uint16_t MotionInterval = 10;          // IMU 采样周期 ms（100Hz）
-constexpr uint16_t TelemetryInterval = 100;      // UDP 遥测发送周期 ms（10Hz）
+constexpr uint16_t TelemetryInterval = 20;       // UDP 遥测发送周期 ms（50Hz，动捕协议 v1）
 constexpr uint16_t TelemetryPort = 5005;         // 遥测端口（Blender 端脚本同端口）
 constexpr float AccelLsbPerGravity = 2048.0f;    // ±16g 量程：2048 LSB/g
 constexpr float GyroLsbPerDegree = 131.0f;       // ±250dps 量程：131 LSB/(°/s)
