@@ -4,7 +4,7 @@
 
 #include "../app/SaberController.h"
 #include "../drivers/AudioOutput.h"
-#include "../drivers/DisplayDriver.h"
+// #include "../drivers/DisplayDriver.h"   // [no-display] 屏幕驱动停用
 #include "../drivers/MotionSensor.h"
 #include "../drivers/PixelStrip.h"
 #include "../drivers/SdCardDriver.h"
@@ -34,7 +34,7 @@ class SystemController {
   void setScreenMode(ScreenMode mode);
 
   // ---- 子系统（成员顺序即依赖顺序）----
-  DisplayDriver display_;      // 圆屏 + 眼睛 + 二维码
+  // DisplayDriver display_;   // [no-display] 圆屏 + 眼睛 + 二维码（停用）
   SdCardDriver sdCard_;        // SD_MMC 挂载（音效文件所在）
   AudioOutput audio_;          // ES8311 编解码 + 功放管理
   PixelStrip strip_;           // WS2812 灯条（含限流）

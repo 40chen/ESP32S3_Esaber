@@ -72,7 +72,7 @@ void SystemController::begin() {
   // ---- 第 4 步：基础服务 ----
   Wire.begin(HardwareConfig::I2cSda, HardwareConfig::I2cScl);   // IMU 总线
   settings_.begin();                                  // NVS 读回用户设置
-  display_.begin();                                   // 屏幕初始化（背光仍灭）
+  // display_.begin();          // [no-display] 屏幕功能整体停用（GC9A01 不初始化，背光仍灭）
 
   const bool motionReady = motion_.begin();
   const bool sdReady = sdCard_.begin();
@@ -86,9 +86,10 @@ void SystemController::begin() {
   // 挂卡和解码器稳定是启动里最重的电流台阶，而屏幕寄存器序列是开环的：
   // 在那个窗口被打断就一直坏到下次断电。趁背光还灭着重跑一遍，
   // 代价只是屏幕的复位延时——所以只跑这一次。
-  display_.repairPanel();
-  display_.showBoot(hardwareReady_);                  // 绿 READY / 红 FAIL
-  Serial.println("[BOOT] panel ready");
+  // display_.repairPanel();        // [no-display] 屏幕复位序列停用
+  // display_.showBoot(hardwareReady_);  // [no-display] 开机画面停用
+  // Serial.println("[BOOT] panel ready");
+  Serial.println("[BOOT] display disabled (no-display build)");
 
   // ---- 第 6 步：启动错峰【改动④关联】----
   // radio 校准时抽最重的脉冲，背光稳定电流又是供电预算的大头——两者错开：
@@ -98,8 +99,10 @@ void SystemController::begin() {
   wifi_.begin();                                      // AP 热点 + beacon 配置
   Serial.println("[BOOT] wifi up");
 
-  display_.enableBacklight();                         // 【改动①入口】PWM 66% 点亮
-  Serial.println("[BOOT] backlight on");
+  // [no-display] 背光功能停用：显式拉低 GPIO8，避免浮空导致背光半亮
+  pinMode(HardwareConfig::DisplayBacklight, OUTPUT);
+  digitalWrite(HardwareConfig::DisplayBacklight, LOW);
+  Serial.println("[BOOT] backlight off (no-display build)");
 
   // ---- 第 7 步：业务子系统 ----
   telemetry_.begin(settings_.blenderIp());
@@ -118,10 +121,11 @@ void SystemController::update() {
   logDiagnosticsOnce();
 
   if (screenMode_ == ScreenMode::Eye) {
-    const MotionData& motion = motion_.data();
-    display_.drawEye(motion.roll / HardwareConfig::EyeGazeRadiansHorizontal,   // roll→水平视线
-                     motion.pitch / HardwareConfig::EyeGazeRadiansVertical,    // pitch→垂直视线
-                     settings_.saber().eyePattern);
+    // [no-display] 眼睛动画停用：Eye 模式下不渲染任何画面
+    // const MotionData& motion = motion_.data();
+    // display_.drawEye(motion.roll / HardwareConfig::EyeGazeRadiansHorizontal,   // roll→水平视线
+    //                  motion.pitch / HardwareConfig::EyeGazeRadiansVertical,    // pitch→垂直视线
+    //                  settings_.saber().eyePattern);
     return;
   }
 
@@ -130,7 +134,7 @@ void SystemController::update() {
   const unsigned long now = millis();
   if (now - lastQrRefresh_ > kQrRefreshMs) {
     lastQrRefresh_ = now;
-    display_.showQr("ESABER WEB", wifi_.localUrl().c_str());
+    // display_.showQr("ESABER WEB", wifi_.localUrl().c_str());  // [no-display] 二维码页停用
   }
 }
 
@@ -189,7 +193,7 @@ void SystemController::handleBootButton() {
 void SystemController::setScreenMode(ScreenMode mode) {
   screenMode_ = mode;
   if (mode == ScreenMode::Qr) {
-    display_.showQr("ESABER WEB", wifi_.localUrl().c_str());
+    // display_.showQr("ESABER WEB", wifi_.localUrl().c_str());  // [no-display] 二维码页停用
     lastQrRefresh_ = millis();
   }
   // Going back to the eye needs no paint here: the driver notices that the
