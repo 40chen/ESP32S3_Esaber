@@ -303,6 +303,10 @@ void SaberController::updateLighting(unsigned long now) {
     strip_->show();
     ++animationPixel_;
     if (animationPixel_ >= HardwareConfig::LedCount / 2) {   // 两端汇合 → 开刃完成
+      // 奇数颗时中心像素不属任何镜像对（动画只画 (0,N-1)…(N/2-1,N/2+1)），
+      // 而常亮特效不重绘（setSettings 只在改设置时填一次色）——缺这一笔，
+      // 开刃完成后中心会永久留一颗暗点。偶数颗时它是无害的冗余填色。
+      strip_->fill(settings_.red, settings_.green, settings_.blue);
       animationPixel_ = 0;
       turnOnAnimation_ = false;
       effectTimer_ = now;

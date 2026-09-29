@@ -54,6 +54,11 @@ bool SdCardDriver::begin() {
 String SdCardDriver::resolveSoundPath(const String& name) {
   if (name.isEmpty()) return String();
   if (name.indexOf('/') >= 0) {   // 带目录前缀的完整引用，原样校验
+    // 纵深防御：只认 validSoundName 同款白名单前缀。NVS 值落盘前有校验，
+    // 但手改 flash 的陈旧值不能在这里变成任意路径。
+    const String defPrefix = String(HardwareConfig::SfxDefaultDir) + "/";
+    const String usrPrefix = String(HardwareConfig::SfxUserDir) + "/";
+    if (!name.startsWith(defPrefix) && !name.startsWith(usrPrefix)) return String();
     return SD_MMC.exists("/" + name) ? name : String();
   }
   // 裸文件名回落顺序：新约定 sfx_default → 旧约定根目录 → sfx_user 兜底
