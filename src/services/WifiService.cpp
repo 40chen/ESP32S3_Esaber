@@ -29,7 +29,11 @@ void WifiService::startAccessPoint() {
   // beacon 默认每 100ms 发一次；300ms 把 radio 的周期性发射降到 1/3，
   // 对停在控制台页面上的手机无任何感知差异。
   // 必须在 softAP 之后调用才生效。IDF 接受 100-60000ms。
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
   esp_wifi_config_beacon_interval(WIFI_IF_AP, 300);
+#else
+  // [build-fix] arduino-esp32 2.0.17（IDF 4.4）无此 API，beacon 保持默认 100ms；升 IDF5 后自动恢复 300ms 优化
+#endif
   Serial.printf("[WiFi] AP: %s (open, no password), http://%s\n", HardwareConfig::DefaultApSsid,
                 WiFi.softAPIP().toString().c_str());
 }
