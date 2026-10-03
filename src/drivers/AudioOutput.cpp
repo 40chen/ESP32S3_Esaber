@@ -111,6 +111,44 @@ void AudioOutput::play(const char* file) {
   const String path = SdCardDriver::resolveSoundPath(file);
   if (path.isEmpty()) return;
 
+  if (currentIsHum_) {
+    if (audio_->isRunning()) {
+      humResumePosition_ = audio_->stopSong();
+      humPaused_ = true;
+    } else {
+      humResumePosition_ = 0;   // 底噪自然播完：下次从头循环
+      humPaused_ = false;
+    }
+    currentIsHum_ = false;
+  }
+
+  playPath(path);
+}
+
+void AudioOutput::playHum(const char* file) {
+  if (!ready_) return;
+  const String path = SdCardDriver::resolveSoundPath(file);
+  if (path.isEmpty()) return;
+
+  if (path != humPath_) {
+    humPath_ = path;
+    humResumePosition_ = 0;
+    humPaused_ = false;
+  } else if (currentIsHum_) {
+    if (audio_->isRunning()) return;
+    humResumePosition_ = 0;   // 自然播完，按原有逻辑从头循环
+    humPaused_ = false;
+  }
+
+  const uint32_t resumePosition = humPaused_ ? humResumePosition_ : 0;
+  if (playPath(path, resumePosition)) {
+    currentIsHum_ = true;
+    humPaused_ = false;
+    humResumePosition_ = 0;
+  }
+}
+
+bool AudioOutput::playPath(const String& path, uint32_t resumePosition) {
   // 播音效就隐含"要功放"，无论刀当前什么状态：收刃音也必须听得见
   setAmplifierEnabled(true);
   enableAmplifierNow();
@@ -119,8 +157,12 @@ void AudioOutput::play(const char* file) {
   // 软件改变要五分之一秒后才被听见——那时流已切换、环形缓冲已在波形
   // 任意位置被冲掉，那就是那声"咔"。codec 的静音带斜坡且直接作用于 DAC。
   board_->setMute(true);
-  audio_->connecttoFS(SD_MMC, path.c_str());
+  const bool started = audio_->connecttoFS(SD_MMC, path.c_str(), resumePosition);
   unmuteDue_ = millis() + HardwareConfig::MuteSwitchMs;   // 到点后自动解除静音
+  if (!started) {
+    Serial.printf("[AUDIO] failed to open sound: %s\n", path.c_str());
+  }
+  return started;
 }
 
 // 库按"满量程的百分比"计数，不是 codec 的：100 是固件允许的最响档，

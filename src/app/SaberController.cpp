@@ -133,7 +133,7 @@ void SaberController::setSettings(const SaberSettings& settings) {
   // 亮刀中途换嗡鸣文件：立刻切换播放，旧流同时被丢弃，耳朵马上听到变化。
   // 开机音/收刀音不追改，下次触发时自然用新文件。
   if (humChanged && humPlaying_ && settings_.power) {
-    audio_->play(settings_.humSound);
+    audio_->playHum(settings_.humSound);
   }
   if (!settings_.power) {
     strip_->clear();
@@ -277,7 +277,7 @@ void SaberController::updateHum(unsigned long now) {
   (void)now;                        // 参数保留为签名一致，逻辑不需要
   if (!humPlaying_) return;
   if (audio_->isRunning()) return;  // 有声音在播：等它播完
-  audio_->play(settings_.humSound);
+  audio_->playHum(settings_.humSound);
   swingReady_ = true;               // 嗡鸣就位 → 挥动检测重新武装
   strikePlaying_ = false;           // 碰撞音已结束
 }

@@ -27,7 +27,8 @@ class AudioOutput {
  public:
   bool begin(bool sdReady);     // sdReady=挂卡结果：没卡不扫音源
   void loop();                  // 每圈主循环：喂解码器 + 静音/功放状态机
-  void play(const char* file);  // 播放 SD 卡上的音效文件
+  void play(const char* file);     // 播放会打断底噪的 SD 音效
+  void playHum(const char* file);  // 播放/续播底噪；效果音插播后从断点恢复
 
   // 任何流（音效或 hum）在播时为 true。光剑用它 falling edge 重新武装
   // hum 循环——这正是不依赖固定时长、任何文件都能当 hum 的原因。
@@ -44,12 +45,17 @@ class AudioOutput {
   void enableAmplifierNow();
   void unmuteIfDue();
   void updateAmplifier();
+  bool playPath(const String& path, uint32_t resumePosition = 0);
 
   Audio* audio_ = nullptr;
   audio_driver::DriverPins* pins_ = nullptr;
   audio_driver::AudioBoard* board_ = nullptr;
+  String humPath_;
+  uint32_t humResumePosition_ = 0;
   bool ready_ = false;
   bool started_ = false;
+  bool currentIsHum_ = false;
+  bool humPaused_ = false;
 
   // codec 的 DAC 音量，用 codec 自己的单位，不是控制台的百分比
   uint8_t codecVolume_ = HardwareConfig::CodecVolume;

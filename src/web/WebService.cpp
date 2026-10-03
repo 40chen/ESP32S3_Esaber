@@ -35,11 +35,9 @@ bool validSoundName(const String& name) {
   if (name.indexOf("..") >= 0) return false;             // 防目录穿越
   if (file.indexOf('/') >= 0 || file.indexOf('\\') >= 0) return false;   // 文件名内不得再有分隔符
   for (unsigned int i = 0; i < file.length(); ++i) {
-    const char c = file[i];
-    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' ||
-                    (unsigned char)c >= 0x80;   // UTF-8 多字节放行（中文文件名）；'/'、'\\'、控制字符均在 0x80 以下，穿越防护不受影响
-    if (!ok) return false;
+    const unsigned char c = static_cast<unsigned char>(file[i]);
+    const bool printableAscii = c >= 0x20 && c <= 0x7e;
+    if (c < 0x80 && (!printableAscii || c == '/' || c == '\\')) return false;
   }
   return true;
 }
@@ -433,7 +431,7 @@ input[type=range]::-moz-range-thumb{width:26px;height:26px;border:none;border-ra
 
     <div class="card" data-card="sounds">
       <h2>音效</h2>
-      <p class="hint">从 SD 卡 sfx_default（默认音效）或 sfx_user（我的音效）文件夹选择音频（.wav / .flac / .mp3），即选即存、断电不丢；底噪换曲立即生效</p>
+      <p class="hint">从 SD 卡 /sfx_default 或 /sfx_user 文件夹选择音频（.wav / .flac / .mp3），即选即存、断电不丢；开机/关机音在下次开刃/收刃时播放，底噪换曲立即生效</p>
       <div class="field">
         <label for="bootSound">开机音效（开刃）</label>
         <select class="input select" id="bootSound" aria-label="开机音效选择"></select>
@@ -628,7 +626,10 @@ function fillSoundSelect(id, current){
   }
   // SD 卡被更换后当前值可能不在清单里：保留原值选项，避免静默换音
   if (current){
-    var known = sel.querySelector('option[value="' + current + '"]');
+    var known = false;
+    for (var i = 0; i < sel.options.length; i++){
+      if (sel.options[i].value === current){ known = true; break; }
+    }
     if (!known){
       var keep = document.createElement('option');
       keep.value = current;
@@ -653,8 +654,10 @@ function renderSoundSelects(){
 }
 // 音效是离散单选，不走滑条的 80ms 合并节流，一次选择一发落地
 function pushSound(key, value){
+  var apiKey = {bootSound:'boot_sound', shutdownSound:'shutdown_sound', humSound:'hum_sound'}[key];
+  if (!apiKey) return;
   var part = {};
-  part[key] = value;
+  part[apiKey] = value;
   S[key] = value;
   localUntil = Date.now() + 1500;
   api('/api/settings', part).then(function(){
