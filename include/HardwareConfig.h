@@ -31,7 +31,7 @@ constexpr int8_t SdD0 = 21;                      // 数据 0（1-bit 模式只�
 
 // -------------------------------------------------------------- LED strip
 constexpr uint8_t LedPin = 5;                    // WS2812 数据脚
-constexpr uint16_t LedCount = 68;                // 灯珠数量（现实修改）
+constexpr uint16_t LedCount = 68;                // 灯珠数量（与实物一致，别多填；2026-10-03 换 68 颗灯带：来回折成 4 等份×17，物理序→数据链 remap 见 PixelStrip）
 // 出厂亮度百分比（与 SaberSettings::brightness 同量纲 0-100），
 // 由 SaberController::ledBrightness() 映射到 MaxLedBrightness 的刻度上。
 constexpr uint8_t DefaultBrightness = 80;

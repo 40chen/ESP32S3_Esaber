@@ -37,7 +37,8 @@ bool validSoundName(const String& name) {
   for (unsigned int i = 0; i < file.length(); ++i) {
     const char c = file[i];
     const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' ||
+                    (unsigned char)c >= 0x80;   // UTF-8 多字节放行（中文文件名）；'/'、'\\'、控制字符均在 0x80 以下，穿越防护不受影响
     if (!ok) return false;
   }
   return true;
