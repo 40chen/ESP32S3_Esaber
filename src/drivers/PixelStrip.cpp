@@ -13,6 +13,24 @@ constexpr uint32_t kChannelBudget =
 
 constexpr unsigned long kLimitLogIntervalMs = 1000;   // "被限流"日志节流
 
+// ----------------------------------------------------------------------------
+// 物理序 → 数据链 remap（规格图《ESaber 灯序 remap 规格图》05 节 方案 A，定稿表）。
+// kRemap[物理序 i] = 数据链编号：物理序 i 是自 P0 起沿进线数的第 i 颗，i=0 在
+// 刀柄侧（IO 引出端，管理员 2026-10-03 拍板）；数据链编号即效果代码的像素下标，
+// 0 = 刀柄、67 = 刀尖。68 颗来回折成 4 等份蛇形（段号 = 规格图物理段号）：
+//   段1 i0–16  → 数据链 0–16（柄端 1/4，自柄向折返）
+//   段2 i17–33 → 数据链 67–51（尖端 1/4，自尖回扫）
+//   段3 i34–50 → 数据链 34–50
+//   段4 i51–67 → 数据链 33–17
+// 四段值域并集恰铺满 0–67（双射），且表为对合：kRemap[kRemap[i]] = i。
+// 效果帧 frame_ 按数据链序存放；show() 沿物理序逐颗查表取色。
+constexpr uint8_t kRemap[HardwareConfig::LedCount] = {
+     0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16,   // 段1
+    67, 66, 65, 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51,   // 段2
+    34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,   // 段3
+    33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,   // 段4
+};
+
 }  // namespace
 
 PixelStrip::PixelStrip()
@@ -86,7 +104,8 @@ void PixelStrip::show() {
   }
 
   for (uint16_t index = 0; index < HardwareConfig::LedCount; ++index) {
-    const uint8_t* pixel = &frame_[index * 3];
+    // index = 物理序（进线方向）：查表得该珠应显示的数据链色，效果逻辑零改动。
+    const uint8_t* pixel = &frame_[kRemap[index] * 3];
     strip_.setPixelColor(index, static_cast<uint8_t>((pixel[0] * factor) >> 8),
                          static_cast<uint8_t>((pixel[1] * factor) >> 8),
                          static_cast<uint8_t>((pixel[2] * factor) >> 8));
