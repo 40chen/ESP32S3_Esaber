@@ -124,11 +124,11 @@ constexpr float PositionLimit = 2.0f;            // m，位置积分钳制（防
 // --------------------------------------------------------- saber gameplay
 // 挥剑/碰撞/手势判定阈值（量纲见 MotionSensor 的 magnitude/rotation 计算）。
 constexpr uint32_t SwingTimeout = 500;           // 挥动判定后的事件窗口 ms
-constexpr uint16_t SwingLowThreshold = 80;       // 慢速挥动阈值
+constexpr uint16_t SwingLowThreshold = 140;      // 慢速挥动起触阈值（调高可抑制轻微晃动）
 constexpr uint16_t SwingThreshold = 180;         // 快速挥动阈值（选用快挥音效组）
-constexpr uint16_t StrikeThreshold = 40;         // 碰撞触发阈值
+constexpr uint16_t StrikeThreshold = 80;         // 碰撞触发阈值
 constexpr uint16_t HardStrikeThreshold = 160;    // 重击阈值（闪光更久）
-constexpr uint16_t OpenThreshold = 60;           // 旋腕开合检测阈值
+constexpr uint16_t OpenThreshold = 80;           // 旋腕开合检测阈值
 constexpr uint8_t GestureToggleCount = 20;       // 旋腕切换所需的累计计数
 constexpr uint32_t GestureInterval = 50;         // 手势累计采样周期 ms
 // 底噪循环靠播放结束的下降沿重新拉起（SaberController 通过
