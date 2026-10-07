@@ -1,6 +1,6 @@
 # ESP32S3_Esaber
 
-基于 ESP32-S3 的光剑项目：68 颗 WS2812 灯带（2026-10-03 换装：来回折成 4 等份×17，物理序→数据链 remap 见 `src/drivers/PixelStrip.cpp`）、MPU6050 姿态传感、I2S 音效（SD 卡双目录音源）、240×240 TFT 屏幕、Web 控制台与 Blender 动捕联动。
+基于 ESP32-S3 的光剑项目：68 颗 WS2812 灯带（2026-10-03 换装：来回折成 4 等份×17，物理序→数据链 remap 见 `src/drivers/PixelStrip.cpp`）、MPU6050 姿态传感、I2S 音效（SD 卡双目录音源）、Web 控制台。Blender 动捕 UDP 遥测目前暂停，IMU 仍用于光剑动作识别。
 
 > 2026-09-26 修订：设备只工作在 AP 模式，不连接家庭路由器；原"辅助 WiFi 登录"流程作废。
 
@@ -19,8 +19,8 @@
 3. **Web 功能**：
    设备以 AP 模式运行，热点 Esaber-Setup（免密直连）。手机连接该热点后访问 http://192.168.4.1 直接进入控制台（无需任何登录或 WiFi 配置步骤），可自定义光剑颜色、亮度、特效、音量、眼睛图案和三路音效（开机音/关机音/底噪），Web 界面的 UI 设计参照苹果的设计
 
-4. **Blender 动捕**：
-   姿态四元数 + 航位推算位置通过 UDP 发送到电脑（动捕协议 v1：31 字节定长二进制帧、50Hz、端口 5005；默认目标 192.168.4.2 = 热点首个客户端，控制台「动捕地址」可改），让虚拟世界的模型和现实世界的光剑联动。唯一接收端脚本：`shared/esaber-blender-link/blender_receiver.py`（契约见同目录 `PROTOCOL.md`）；旧 CSV 接收端已废弃归档（`shared/blender/deprecated/`）
+4. **Blender 动捕（暂时停用）**：
+   固件当前不初始化或发送动捕 UDP 遥测，因此不会向 Blender 推送姿态数据；MPU6050 采样仍启用，用于光剑挥动、碰撞和手势识别。动捕协议 v1（31 字节定长帧、50Hz、端口 5005）及接收端脚本 `shared/esaber-blender-link/blender_receiver.py`（契约见同目录 `PROTOCOL.md`）保留，恢复遥测后可继续使用。
 
 ## 当前实现（2026-09-26 固件优化后）
 

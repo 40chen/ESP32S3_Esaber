@@ -105,7 +105,7 @@ void SystemController::begin() {
   Serial.println("[BOOT] backlight off (no-display build)");
 
   // ---- 第 7 步：业务子系统 ----
-  telemetry_.begin(settings_.blenderIp());
+  // telemetry_.begin(settings_.blenderIp());  // 动捕停用；保留 IMU 供光剑手势使用
   saber_.begin(&audio_, &strip_, &motion_, settings_.saber());
   web_.begin(&server_, &saber_, &wifi_, &settings_, &telemetry_);
   Serial.println("[ESABER] ready");
@@ -116,7 +116,7 @@ void SystemController::update() {
   saber_.update();                    // 光剑：手势/音效/灯效
   server_.handleClient();             // web 控制台请求
   settings_.tick();                   // 冲刷到期的 NVS 延迟写入（500ms 节流窗口）
-  telemetry_.update(motion_);         // 动捕 UDP 遥测（50Hz，协议 v1 31B 帧）
+  // telemetry_.update(motion_);       // 动捕停用，不再发送 UDP 遥测
   handleBootButton();
   logDiagnosticsOnce();
 
